@@ -375,44 +375,10 @@ wide_df <- team_agg %>%
     names_glue = "{team}_{.value}"
   )
 
-dim(wide_df)
 
 # No need for match id from now on, drop it
 wide_df$match_id <- NULL
 
+dim(wide_df)
 
-# drop every feature that has >= 0.8 corelation 
-
-
-cor_matrix <- cor(wide_df, use = "complete.obs")
-
-library(caret)
-
-cutoff <- 0.8
-
-high_cor_names <- findCorrelation(cor_matrix, cutoff = cutoff, names = TRUE)
-
-target <- wide_df$team100_win
-
-results <- do.call(rbind, lapply(high_cor_names, function(col) {
-  cors <- abs(cor_matrix[col, ])
-  partners <- names(cors[cors >= cutoff & names(cors) != col])
-  
-  do.call(rbind, lapply(partners, function(p) {
-    data.frame(
-      col1 = col,
-      col2 = p,
-      cor_with_target_col1 = abs(cor(wide_df[[col]], target, use = "complete.obs")),
-      cor_with_target_col2 = abs(cor(wide_df[[p]], target, use = "complete.obs"))
-    )
-  }))
-}))
-
-results$drop <- ifelse(results$cor_with_target_col1 < results$cor_with_target_col2,
-                       results$col1, results$col2)
-cols_to_drop <- unique(results$drop)
-cols_to_drop
-df_clean <- wide_df[, !(names(wide_df) %in% cols_to_drop)]
-
-dim(df_clean)
-write.csv2(df_clean, "processed.csv")
+write.csv2(wide_df, "processed.csv")
