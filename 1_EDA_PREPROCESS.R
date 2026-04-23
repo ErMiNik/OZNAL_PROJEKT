@@ -377,87 +377,42 @@ wide_df <- team_agg %>%
 
 dim(wide_df)
 
-table(wide_df$team100_win)
+# No need for match id from now on, drop it
+wide_df$match_id <- NULL
 
 
-library(ggplot2)
-library(tidyr)
-
-# pick key metrics to compare
-key_metrics <- c("team100_kills", "team100_gold_earned", 
-                 "team100_vision_score", "team100_dragon_kills", 
-                 "team100_baron_kills")
-
-# pivot to long for easy plotting
-wide_df %>%
-  select(team100_win, all_of(key_metrics)) %>%
-  pivot_longer(-team100_win, names_to = "metric", values_to = "value") %>%
-  ggplot(aes(x = factor(team100_win), y = value, fill = factor(team100_win))) +
-  geom_boxplot() +
-  facet_wrap(~metric, scales = "free_y") +
-  labs(x = "Win", fill = "Win")
+# drop every feature that has >= 0.8 corelation 
 
 
-team100_cols <- names(wide_df)[grepl("^team100_", names(wide_df))]
+cor_matrix <- cor(wide_df, use = "complete.obs")
 
-cor_with_win <- cor(wide_df[, team100_cols], use = "complete.obs")[, "team100_win"]
+library(caret)
 
-# sort and plot top correlated features
-cor_with_win %>%
-  sort(decreasing = TRUE) %>%
-  as.data.frame() %>%
-  tibble::rownames_to_column("feature") %>%
-  setNames(c("feature", "correlation")) %>%
-  filter(feature != "team100_win") %>%
-  head(20) %>%
-  ggplot(aes(x = reorder(feature, correlation), y = correlation)) +
-  geom_col() +
-  coord_flip() +
-  labs(x = "", y = "Correlation with win")
+cutoff <- 0.8
 
-ggplot(wide_df, aes(x = team100_kills, y = team100_gold_earned, 
-                    color = factor(team100_win))) +
-  geom_point(alpha = 0.4) +
-  labs(color = "Win")
+high_cor_names <- findCorrelation(cor_matrix, cutoff = cutoff, names = TRUE)
 
-write.csv2(wide_df, "processed.csv")
+target <- wide_df$team100_win
 
+results <- do.call(rbind, lapply(high_cor_names, function(col) {
+  cors <- abs(cor_matrix[col, ])
+  partners <- names(cors[cors >= cutoff & names(cors) != col])
+  
+  do.call(rbind, lapply(partners, function(p) {
+    data.frame(
+      col1 = col,
+      col2 = p,
+      cor_with_target_col1 = abs(cor(wide_df[[col]], target, use = "complete.obs")),
+      cor_with_target_col2 = abs(cor(wide_df[[p]], target, use = "complete.obs"))
+    )
+  }))
+}))
 
+results$drop <- ifelse(results$cor_with_target_col1 < results$cor_with_target_col2,
+                       results$col1, results$col2)
+cols_to_drop <- unique(results$drop)
+cols_to_drop
+df_clean <- wide_df[, !(names(wide_df) %in% cols_to_drop)]
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+dim(df_clean)
+write.csv2(df_clean, "processed.csv")
