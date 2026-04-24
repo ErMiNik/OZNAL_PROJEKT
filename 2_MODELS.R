@@ -3,10 +3,14 @@ library(car)
 library(MASS)
 library(e1071)
 
+
+
 # Load data
 df <- read.csv2("processed.csv")
 df <- df[, -1]  # drops the first column (index)
 
+
+names(df)
 # Make target a factor
 df$team100_win <- as.factor(df$team100_win)
 
@@ -33,7 +37,7 @@ print(nzv[nzv$nzv == TRUE, ])
 # 3. Check normality (for LDA) — test a few features
 cat("\nShapiro-Wilk tests (per class, first 5 numeric features):\n")
 numeric_cols <- names(train)[sapply(train, is.numeric)]
-for (col in numeric_cols[1:5]) {
+for (col in numeric_cols) {
   for (cls in levels(train$team100_win)) {
     subset_data <- train[[col]][train$team100_win == cls]
     # Shapiro only works for n <= 5000, sample if needed
@@ -64,6 +68,7 @@ tryCatch({
     cat("  All VIF values < 5. No multicollinearity issues.\n")
   }
 }, error = function(e) cat("  VIF error:", e$message, "\n"))
+
 
 # 6. Check for perfect separation (logistic regression)
 cat("\nChecking for zero-variance features within classes:\n")

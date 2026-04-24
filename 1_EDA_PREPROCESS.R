@@ -225,7 +225,7 @@ par(mfrow = c(1, 1))
 # - time played
 # - kill participation
 
-# are scuwed
+# are scewed
 # - champ lvl
 # - kills
 # - deaths
@@ -351,7 +351,7 @@ sum_cols <- setdiff(names(df),
                     c(first_cols, mean_cols,
                       "match_id", "team_id"))
 
-
+# .names keeps the original name, without it we would get kda_mean or kills_sum
 team_agg <- df %>%
   group_by(match_id, team_id) %>%
   summarise(
@@ -375,10 +375,178 @@ wide_df <- team_agg %>%
     names_glue = "{team}_{.value}"
   )
 
-
 # No need for match id from now on, drop it
 wide_df$match_id <- NULL
+# also drop team200_win we will use team100_win as our target
+wide_df$team200_win <- NULL
 
-dim(wide_df)
+predictors <- setdiff(names(wide_df), "team100_win")
 
-write.csv2(wide_df, "processed.csv")
+# Check near zero variance again with aggregated data
+nzv <- nearZeroVar(wide_df[, predictors], saveMetrics = TRUE)
+drop_nzv <- rownames(nzv[nzv$nzv == TRUE, ])
+print(drop_nzv)
+remaining <- setdiff(predictors, drop_nzv)
+
+wide_df <- wide_df[, !(names(wide_df) %in% drop_nzv)]
+
+
+
+# define function for checking highly correlated features
+get_high_cor <- function(df){
+  
+  # Lets look at highly corelated feature and drop any that seem redundant
+  predictors <- setdiff(names(df), "team100_win")
+  cor_matrix <- cor(df[, predictors], use = "complete.obs")
+  
+  # Get upper triangle pairs only (avoid duplicates)
+  pairs <- which(upper.tri(cor_matrix), arr.ind = TRUE)
+  
+  cor_list <- data.frame(
+    feature_1 = rownames(cor_matrix)[pairs[, 1]],
+    feature_2 = colnames(cor_matrix)[pairs[, 2]],
+    correlation = round(cor_matrix[pairs], 4),
+    abs_correlation = round(abs(cor_matrix[pairs]), 4),
+    stringsAsFactors = FALSE
+  )
+  
+  # Sort by absolute correlation descending
+  cor_list <- cor_list[order(cor_list$abs_correlation, decreasing = TRUE), ]
+  
+  # Show only |r| >= 0.8
+  high_cor <- cor_list[cor_list$abs_correlation >= 0.8, ]
+  return(high_cor)
+}
+
+
+high_cor <- get_high_cor(wide_df)
+# game duration and time played - same numbers drop one of them
+# team200_kills - team100_deaths 0.99 coralation
+# team200_deaths - team100_kills - same problem
+# we will only keep team100 stats that are redundant with team200
+# also team100_[TYPE]_damage_dealt_to_champions -
+# team200_[TYPE]_damage_taken
+
+# team100_gold_earned - team100_gold_spent 0.98 corelation
+
+high_cor_drop <- c("time_played", "team200_kills", "team200_deaths", "team200_assists",
+                   "team200_champion_level", "team100_assists", "team100_gold_per_minute",
+                   "team200_gold_per_minute",
+                   
+                   "team200_physical_damage_dealt",
+                   "team200_physical_damage_dealt_to_champions",
+                   "team200_physical_damage_taken",
+                   
+                   "team200_magic_damage_dealt",
+                   "team200_magic_damage_dealt_to_champions",
+                   "team200_magic_damage_taken",
+                   
+                   "team200_true_damage_dealt",
+                   "team200_true_damage_dealt_to_champions",
+                   "team200_true_damage_taken",
+                   
+                   "team200_total_damage_dealt",
+                   "team200_total_damage_dealt_to_champions",
+                   "team200_total_damage_taken",
+                   
+                   "team200_damage_self_mitigated",
+                   
+                   "team200_gold_earned", 'team100_gold_earned',
+                   
+                   "team200_first_blood_kill", "team200_first_tower_kill",
+                   
+                   "team100_champion_experience", "team200_champion_experience",
+                   
+                   "team200_vision_wards_bought_in_game",
+                   
+                   "team100_total_time_spent_dead", "team200_total_time_spent_dead",
+                   
+                   "team100_gold_spent", "team200_gold_spent",
+                   
+                   "team100_turret_takedowns", "team200_turret_takedowns",
+                   
+                   "team100_inhibitor_takedowns", "team200_inhibitor_takedowns",
+                   "team100_inhibitor_kills", "team200_inhibitor_kills",
+                   "team100_turret_kills", "team200_turret_kills",
+                   
+                   "team100_total_damage_dealt_to_champions",
+                   
+                   "team200_total_minions_killed",
+                   
+                   "team100_wards_placed", "team200_wards_placed",
+                   "team100_detector_wards_placed", "team200_detector_wards_placed",
+                   
+                   "team100_items_purchased", "team200_items_purchased",
+                   
+                   "team100_wards_killed", "team200_wards_killed",
+                   
+                   "team100_vision_score", "team200_vision_score",
+                   
+                   "team200_total_ally_jungle_minions_killed",
+                   
+                   "team100_total_minions_killed", "team200_total_minions_killed",
+                   "team100_neutral_minions_killed", "team200_neutral_minions_killed",
+                   
+                   "team200_largest_killing_spree", "team200_killing_sprees",
+                   
+                   "team100_total_damage_taken",
+                   "team100_physical_damage_dealt_to_champions",
+                   "team100_magic_damage_dealt_to_champions",
+                   "team100_killing_sprees",
+                   "team100_vision_wards_bought_in_game",
+                   "team100_total_damage_dealt",
+                   "team200_damage_per_minute",
+                   "team100_damage_per_minute",
+                   "team100_physical_damage_taken",
+                   "game_duration")
+
+# We iteratively run this code and removed highly correlated features (>= 0.8)
+clean_wide <- wide_df[, !names(wide_df) %in% high_cor_drop]
+
+high_cor2 <- get_high_cor(clean_wide)
+
+dim(clean_wide)
+
+
+# Lets try algorithmic approach that drops feature that has the most
+# correlated features that are >= 0.8
+predictors <- setdiff(names(wide_df), "team100_win")
+remaining <- predictors
+dropped <- c()
+
+while (TRUE) {
+  cor_matrix <- cor(wide_df[, remaining], use = "complete.obs")
+  diag(cor_matrix) <- 0
+  
+  # Count how many features each feature correlates with at |r| >= 0.8
+  high_cor_count <- sapply(remaining, function(f) {
+    sum(abs(cor_matrix[f, ]) >= 0.8)
+  })
+  
+  # Stop if no more high correlations
+  if (max(high_cor_count) == 0) break
+  
+  # Drop the feature with the most high correlations
+  worst <- names(which.max(high_cor_count))
+  
+  dropped <- c(dropped, worst)
+  remaining <- setdiff(remaining, worst)
+}
+
+clean_wide2 <- wide_df[, c("team100_win", remaining)]
+dim(clean_wide2)
+
+
+
+# Features the algorithm dropped that we didnt
+setdiff(dropped, high_cor_drop)
+
+# Features we dropped that algorithm didnt
+setdiff(high_cor_drop, dropped)
+
+length(dropped)
+length(high_cor_drop)
+
+# we still want to keep the most features so we choose the algorthmic
+# approach
+write.csv2(clean_wide2, "processed.csv")
