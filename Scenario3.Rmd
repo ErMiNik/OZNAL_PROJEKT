@@ -1,0 +1,22 @@
+Loading the libraries
+```{r}
+library(tidyverse)
+```
+
+Loading the preprocessed dataset
+```{r}
+df <- read.csv("processed.csv", sep=";", dec=",")
+#removing the first column (exported indexing)
+df <- df[2:ncol(df)]
+```
+
+Nacitanie modelu, zaciatok backward selection
+```{r}
+#inspo https://www.youtube.com/watch?v=5tqlWwKv4jg
+full_model <- glm(team100_win ~ ., data = df, family = binomial)
+
+best_model <- step(full_model, direction = "backward", trace = FALSE)
+
+summary(best_model)
+```
+

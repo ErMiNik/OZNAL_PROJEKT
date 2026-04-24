@@ -1,0 +1,64 @@
+#Scenario 2
+Parametric vs non-parametric models
+
+
+Loading the libraries
+```{r}
+library(tidyverse)
+```
+
+Loading the preprocessed dataset
+```{r}
+df <- read.csv("processed.csv", sep=";", dec=",")
+#removing the first column (exported indexing)
+df <- df[2:ncol(df)]
+```
+
+```{r}
+
+```
+
+##Statistical assumptions
+Since in this project, the main goal is binary classification (weather a team loses/wins), we are going to be using binary clasification models. For these models, there are a few assumptions we must check before proceeding with a certain model. These assumptions are:
+- independence (each observation is independent - each of the observations is a sepparate new match)
+- normality
+- colinearity
+- outliers
+- homoscedasticity
+- outliers (we have already checked in EDA, however, we might need to get rid of them based on the model we will use)
+- feature scaling (not really a check, more of a data preparation)
+- sample size (our sample size is 1216 obs.)
+- linear relationship
+
+
+Checking normality
+```{r}
+results <- list()
+for(i in colnames(df)){
+  x <- df[[i]]
+  if(is.numeric(x)){
+    results[i] = shapiro.test(x)$p.value
+  }
+}
+
+bad_cols <- names(results)[results < 0.05]
+length(bad_cols)
+
+
+for(i in colnames(df)){
+  x <- df[[i]]
+  if(is.numeric(x)){
+    qqnorm(x, main=i)
+    qqline(x, col="red")
+  }
+  
+}
+
+
+
+```
+
+
+
+
+

@@ -375,6 +375,9 @@ wide_df <- team_agg %>%
     names_glue = "{team}_{.value}"
   )
 
+#our response variable is going to be team100_win, that means that team200_win is just a mirror image, so we can remove it
+wide_df <- wide_df %>%
+  select(-team200_win)
 
 # No need for match id from now on, drop it
 wide_df$match_id <- NULL
