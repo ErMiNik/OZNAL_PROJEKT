@@ -19,6 +19,10 @@ df <- df[, -1]  # drops the first column (index)
 dim(df)
 ```
 
+```{r}
+names(df)
+```
+
 # Split
 
 To correctly measure our metrics we need to split the data to train and test datasets. We split our data in 80/20 ratio. We also set seed for replicability
@@ -103,7 +107,7 @@ We already dropped any features that had \|correlation\| \>= 0.8 in eda + prepro
 
 ```{r}
 library(car)
-remove_vif <- function(df){
+remove_vif <- function(df, threshold){
   current_predictors <- setdiff(names(df), "target")
   repeat {
     current_formula <- as.formula(
@@ -132,7 +136,7 @@ length(names(train_data_lr))
 After doing VIF check
 
 ```{r}
-new_pred <- remove_vif(train_data_lr)
+new_pred <- remove_vif(train_data_lr, 5)
 length(new_pred)
 ```
 
@@ -197,8 +201,6 @@ log_regresion_model <- glm(target ~ ., data = train_data_lr, family = "binomial"
 
 ## Summary
 
-We can see that out of our 16 predictors only 7 are significant. Test accuracy is 0.9671 and precision 0.9558. Our model doesnt seem to be overfitted either after checking train accuracy being 0.9661
-
 ```{r}
 accuracy <- function(tab){
   return(sum(diag(tab)) / sum(tab))
@@ -208,23 +210,98 @@ precision <- function(tab){
   return(tab["1", "1"] / sum(tab["1", ]))
 }
 ```
+### Metrics
 
 ```{r}
+lrm_train_prob <- predict(log_regresion_model, type = "response")
+lrm_train_pred <- ifelse(lrm_train_prob > 0.5, 1, 0)
+train_tab <- table(Predicted = lrm_train_pred, Actual = train_data_lr$target)
+
+acc <- accuracy(train_tab)
+prec <- precision(train_tab)
+cat("Train Accuracy:", round(acc, 4), "\n")
+cat("Train Precision:", round(prec, 4), "\n")
+
+cat("\n")
 lrm_test_prob <- predict(log_regresion_model, newdata = test_data_lr, type = "response")
 
 lrm_test_pred <- ifelse(lrm_test_prob > 0.5, 1, 0)
 
 test_tab <- table(Predicted = lrm_test_pred, Actual = test_data_lr$target)
-print(test_tab)
 
 acc <- accuracy(test_tab)
 prec <- precision(test_tab)
 
-cat("Accuracy:", round(acc, 4), "\n")
-cat("Precision:", round(prec, 4), "\n")
+cat("Test Accuracy:", round(acc, 4), "\n")
+cat("Test Precision:", round(prec, 4), "\n")
 
-summary(log_regresion_model)
+
+tab_df <- as.data.frame(test_tab)
+
+ggplot(tab_df, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), size = 8, color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  theme_minimal() +
+  labs(title = "Confusion Matrix")
 ```
+
+### Graphs 
+```{r}
+
+model_summary <- summary(log_regresion_model)$coefficients
+coef_df <- data.frame(
+  feature = rownames(model_summary)[-1],
+  estimate = model_summary[-1, 1],
+  std_error = model_summary[-1, 2],
+  p_value = model_summary[-1, 4]
+)
+
+coef_df$significant <- ifelse(coef_df$p_value < 0.05, "Yes", "No")
+coef_df <- coef_df[order(coef_df$estimate), ]
+coef_df$feature <- factor(coef_df$feature, levels = coef_df$feature)
+
+ggplot(coef_df, aes(x = estimate, y = feature, color = significant)) +
+  geom_point(size = 3) +
+  geom_errorbarh(aes(xmin = estimate - 1.96 * std_error,
+                     xmax = estimate + 1.96 * std_error), height = 0.2) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  scale_color_manual(values = c("No" = "grey", "Yes" = "blue")) +
+  theme_minimal() +
+  labs(title = "Logistic Regression Coefficients",
+       x = "Coefficient Estimate", y = "")
+```
+
+
+```{r}
+library(pROC)
+
+pred_prob <- predict(log_regresion_model, newdata = test_data_lr, type = "response")
+roc_obj <- roc(test_data_lr$target, pred_prob)
+
+plot(roc_obj, main = "ROC Curve",
+     col = "blue", lwd = 2,
+     print.auc = TRUE, auc.polygon = TRUE)
+```
+
+
+
+```{r}
+pred_df <- data.frame(
+  probability = pred_prob,
+  actual = as.factor(test_data_lr$target)
+)
+
+ggplot(pred_df, aes(x = probability, fill = actual)) +
+  geom_density(alpha = 0.5) +
+  scale_fill_manual(values = c("0" = "red", "1" = "blue"),
+                    labels = c("Loss", "Win")) +
+  geom_vline(xintercept = 0.5, linetype = "dashed") +
+  theme_minimal() +
+  labs(title = "Predicted Probability Distribution",
+       x = "Predicted P(Win)", fill = "Actual")
+```
+
 
 # Naive Bayes
 
@@ -244,13 +321,14 @@ summary(log_regresion_model)
 
 3.  Discrete features have multinomial distributions
 
--   <https://faculty.washington.edu/yenchic/20A_stat512/Lec7_Multinomial.pdf> 
-4. Features are equally important
-5. No missing data
+-   <https://faculty.washington.edu/yenchic/20A_stat512/Lec7_Multinomial.pdf>
+
+4.  Features are equally important
+5.  No missing data
 
 ## Preprocessing
-We need to check normality for continuous data for each class. Lets first split data into discrete and continuous. Lets look at the qqplots of features and decide which are continuous and discrete
 
+We need to check normality for continuous data for each class. Lets first split data into discrete and continuous. Lets look at the qqplots of features and decide which are continuous and discrete
 
 ```{r}
 par(mfrow = c(1, 1))
@@ -261,7 +339,7 @@ for (feat in predictors) {
 }
 ```
 
-After observing the qqplots we decided to split the data 
+After observing the qqplots we decided to split the data
 
 ```{r}
 discrete <- c("target", "diff_triple_kills", "diff_largest_multi_kill",
@@ -272,7 +350,6 @@ discrete <- c("target", "diff_triple_kills", "diff_largest_multi_kill",
 
 continuous <- setdiff(names(train_data), discrete)
 ```
-
 
 ```{r}
 cat("\n Discrete \n")
@@ -285,10 +362,11 @@ for (feat in continuous) {
   cat(feat, length(unique(train_data[[feat]])), "\n")
 }
 ```
-We can see that we devided the data into groups where discrete features have < 20 unique values.
 
+We can see that we devided the data into groups where discrete features have \< 20 unique values.
 
 ### Target class split
+
 For NB the normality is check for each class so we need to split the data. We also just need to check the continuous data so lets only include them.
 
 ```{r}
@@ -296,11 +374,9 @@ class_0 <- train_data[train_data$target == 0, continuous]
 class_1 <- train_data[train_data$target == 1, continuous]
 ```
 
-
-
 ### Normality check
-We will use both visual techniques and shapiros willk test based on paper https://pmc.ncbi.nlm.nih.gov/articles/PMC3693611/
 
+We will use both visual techniques and shapiros willk test based on paper <https://pmc.ncbi.nlm.nih.gov/articles/PMC3693611/>
 
 ```{r}
 library(e1071)
@@ -356,7 +432,6 @@ check_normality <- function(df, features){
 }
 ```
 
-
 ```{r}
 output <- check_normality(class_0, continuous)
 fail_class_0 <- output$fail
@@ -369,6 +444,7 @@ pass_class_1 <- output$pass
 
 setdiff(names(pass_class_0), names(pass_class_1))
 ```
+
 Features that passed normality check in class 1 also passed in class 0
 
 ```{r}
@@ -383,9 +459,10 @@ train_data_nb <- train_data[, union(names(passed), discrete)]
 test_data_nb <- test_data[, union(names(passed), discrete)]
 ```
 
-
 #### Passed
+
 Lets observe features that passed
+
 ```{r}
 qqplot_df <- function(df){
   par(mfrow = c(1, 1))
@@ -397,12 +474,11 @@ qqplot_df <- function(df){
 }
 ```
 
-
 ```{r}
 qqplot_df(passed)
 ```
-#### Failed
 
+#### Failed
 
 ```{r}
 qqplot_df(failed)
@@ -421,6 +497,7 @@ nb_model <- naiveBayes(
 ## Summary
 
 ### Metrics
+
 ```{r}
 
 # Predict on test set
@@ -428,8 +505,7 @@ nb_pred <- predict(nb_model, newdata = test_data_nb, type = "class")
 nb_prob <- predict(nb_model, newdata = test_data_nb, type = "raw")
 
 
-tab_test <- table(nb_pred, as.factor(test_data_nb$target))
-print(tab)
+tab_test <- table(Predicted = nb_pred, Actual = as.factor(test_data_nb$target))
 
 acc <- accuracy(tab_test)
 prec <- precision(tab_test)
@@ -443,15 +519,25 @@ nb_train_pred <- predict(nb_model, newdata = train_data_nb, type = "class")
 
 # Accuracy
 tab_train <- table(nb_train_pred, as.factor(train_data_nb$target))
-print(tab_train)
 
 acc <- accuracy(tab_train)
 prec <- precision(tab_train)
 cat("Train Accuracy:", round(acc, 4), "\n")
 cat("Train Precision:", round(prec, 4), "\n")
+
+
+tab_df <- as.data.frame(tab_test)
+
+ggplot(tab_df, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), size = 8, color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  theme_minimal() +
+  labs(title = "Confusion Matrix")
 ```
 
 ### Graphs
+
 Lets take a look at the predictors and how they separate the classes
 
 ```{r}
@@ -465,33 +551,31 @@ for (fet in names(train_data_nb)){
 }
 ```
 
-
 ```{r}
-library(pROC)
-
 probs <- predict(nb_model, test_data_nb, type = "raw")[, "1"]
 roc_obj <- roc(test_data_nb$target, probs)
 plot(roc_obj, main = paste("AUC:", round(auc(roc_obj), 3)))
 ```
 
 
-
 # LDA
 
 ## Assumptions of LDA
-1. Binary outcome (already satisfied)
-2. Normality within each class
-3. Equal covariance matrices across classes (homogeneity)
-4. No multicollinearity
-5. No missing data
-6. Sufficient sample size
+
+1.  Binary outcome (already satisfied)
+2.  Normality within each class
+3.  Equal covariance matrices across classes (homogeneity)
+4.  No multicollinearity
+5.  No missing data
+6.  Sufficient sample size
 
 ## Preprocessing
+
 LDA only work with continuous data which means we are splitting continuous again as we did in NB.
 
 ### Continuous/Discrete Split
-For Naive Bayes we tryed to select continuous data by hand. Here we will try algorithmic approach for every average unique count >= 5 we define the features as discrete.
 
+For Naive Bayes we tryed to select continuous data by hand. Here we will try algorithmic approach for every average unique count \>= 5 we define the features as discrete.
 
 ```{r}
 predictors <- setdiff(names(train_data), "target")
@@ -513,7 +597,6 @@ for (feat in predictors) {
 
 Lets compare this approach and our visual only
 
-
 ```{r}
 cat("Manual approach: ", length(continuous), "\n")
 cat("Alg approach: ", length(continuous_alg), "\n")
@@ -531,17 +614,15 @@ for (feat in discrete_alg) {
 max(temp)
 ```
 
-We made the cut off for discrete feature having < 20 unique values, whereas with the algorithmic approach the cut off is < 185 🫢
-
+We made the cut off for discrete feature having \< 20 unique values, whereas with the algorithmic approach the cut off is \< 185 🫢
 
 ```{r}
 train_lda <- train_data[, c("target", continuous_alg)]
 test_lda <- test_data[, c("target", continuous_alg)]
 ```
 
-
-
 ### Normality check
+
 Same as with NB we need to check normality for the continuous features for each target class
 
 ```{r}
@@ -574,8 +655,8 @@ test_lda <- test_lda[, c("target", names(passed))]
 
 Compare to NB where we had 16 after continuous and normality check here we have 13 features.
 
-
 ### Colinearity
+
 Same as with logistic regression we will use VIF as metric if our data are colinear or not
 
 Before doing VIF check
@@ -587,7 +668,7 @@ length(names(train_lda))
 After doing VIF check
 
 ```{r}
-new_pred <- remove_vif(train_lda)
+new_pred <- remove_vif(train_lda, 5)
 length(new_pred)
 ```
 
@@ -597,8 +678,8 @@ test_lda <- test_lda[, c("target", new_pred)]
 ```
 
 ### Homoscedasticity
-First we can use Box's M test
 
+First we can use Box's M test
 
 ```{r}
 library(MASS)
@@ -612,6 +693,7 @@ boxM_result <- boxM(
 )
 print(boxM_result)
 ```
+
 Box's M test rejected null hypothesis. We will still check the variance manually using boxplots and comparing variance of each features across classes
 
 ```{r}
@@ -638,8 +720,8 @@ cat("\nProblematic (ratio > 2 or < 0.5):",
     sum(var_comparison$ratio > 2 | var_comparison$ratio < 0.5), "\n")
 
 ```
-We can see no problematic features, lets also check boxplots
 
+We can see no problematic features, lets also check boxplots
 
 ```{r}
 
@@ -655,8 +737,7 @@ for (feat in predictors) {
 }
 ```
 
-Box's M test rejected the null hypothesis of equal covariance matrices (p < 0.001), however this test is known to be overly sensitive.Visual inspection and variance ratio analysis showed all features had variance ratios between 0.82 and 1.24, indicating the assumption is practically met.
-
+Box's M test rejected the null hypothesis of equal covariance matrices (p \< 0.001), however this test is known to be overly sensitive.Visual inspection and variance ratio analysis showed all features had variance ratios between 0.82 and 1.24, indicating the assumption is practically met.
 
 ## Model fit
 
@@ -667,24 +748,26 @@ lda_model <- lda(
 )
 ```
 
-
 ## Summary
 
+
+### Metrics
+
 ```{r}
-lda_train_pred <- predict(lda_model, train_clean)$class
-train_tab <- table(lda_train_pred, as.factor(train_clean$target))
+lda_train_pred <- predict(lda_model, train_lda)$class
+train_tab <- table(lda_train_pred, as.factor(train_lda$target))
 print(train_tab)
 
 acc <- accuracy(train_tab)
 prec <- precision(train_tab)
 
-cat("Test Accuracy:", round(acc, 4), "\n")
-cat("Test Precision:", round(prec, 4), "\n")
+cat("train Accuracy:", round(acc, 4), "\n")
+cat("train Precision:", round(prec, 4), "\n")
 
 # Test accuracy
-lda_test_pred <- predict(lda_model, test_clean)$class
-test_tab <- table(lda_test_pred, as.factor(test_clean$target))
-print(test_tab)
+lda_test_pred <- predict(lda_model, test_lda)$class
+test_tab <- table(Predicted = lda_test_pred, Actual = as.factor(test_lda$target))
+
 
 acc <- accuracy(test_tab)
 prec <- precision(test_tab)
@@ -692,8 +775,19 @@ prec <- precision(test_tab)
 cat("Test Accuracy:", round(acc, 4), "\n")
 cat("Test Precision:", round(prec, 4), "\n")
 
+tab_df <- as.data.frame(test_tab)
+
+ggplot(tab_df, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), size = 8, color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  theme_minimal() +
+  labs(title = "Confusion Matrix")
+
 ```
 
+
+### Graphs
 
 ```{r}
 library(MASS)
@@ -723,7 +817,19 @@ ggplot(coefs, aes(x = reorder(feature, abs(weight)), y = weight)) +
   theme_minimal()
 ```
 
+# All models summary
 
 
+| model | train accuracy | train precision | test accuracy | test precision |
+|-------|----------------|-----------------|---------------|----------------|
+| LR    | 0.9661         | 0.9639          | 0.9671        | 0.9558         |
+| NB    | 0.9383         | 0.9291          | 0.9259        | 0.8974         |
+| LDA   | 0.9188         | 0.9064          | 0.9095        | 0.8803         |
 
+# Conclusion
 
+Our main metric is accuracy, based on these results the best model is Logistic regression. We also compare the train and test accuracy and concluded that the model is not overfit on  training data.
+
+# Next steps
+
+Our next steps in project is to model 3 non-parametric models and compare them to our best parametric model 
