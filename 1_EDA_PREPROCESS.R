@@ -206,8 +206,6 @@ drop_cols <- c("queue_id",
 
 df <- df[, !(names(df) %in% drop_cols)]
 
-# We want to exclude any games that 
-
 
 # we will also check cols with zero variance and decide which to drop
 
@@ -480,6 +478,7 @@ hypothesis_df <- data.frame(offensive_ping_diff, defensive_ping_diff, all_pings,
 # p = 0.05
 # H0: The mean offensive ping differential is the same for winning and losing teams
 # H1: The mean offensive ping differential differs between winning and losing teams
+
 
 library(moments)
 shapiro.test(hypothesis_df$offensive_ping_diff)

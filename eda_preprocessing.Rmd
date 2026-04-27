@@ -1,0 +1,597 @@
+---
+title: "EDA and Preprocessing"
+author: "Milan Mikuláš, Marek Vatrt"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Goal
+In this notebook we will be doing EDA and pre processing on our League of Legends dataset https://huggingface.co/datasets/BoostedJonP/league_of_legends_match_data . Our goal is to do binary classification based on end-of-game statistics. We will be modeling post-game results not pre-game prediction. The two classes 1/0 represents which team will be classified as winner and looser.
+
+We will be stating these research questions about our data and later answering them based on hypothesis testing and data analysis.
+
+## Research questions
+
+RQ1: Is there a significant difference in the pings count and their type between winning and losing teams?
+
+RQ2: Does early game advantage first blood + first tower significantly impact the result of the game ?
+
+# Load data
+
+Lets load data and do basic exploratory
+
+```{r}
+df <- read_csv("data.csv")
+print(dim(df))
+print(colnames(df))
+print(str(df))
+```
+## Eda (long format data)
+We have a lot of useful numeric columns. Some are useless as champion_id but we will filter them later on.
+
+### Queue_id
+
+There is a queue_id which divides the matches into different groups of gamemodes. League of Legends has more gamemode types out of which the solo queue ranked is the most competitive. This is represented with queue_id 420. This way the data will be more consistent and it would be bad for the model to mix competitive gamemode with for fun ones.
+
+```{r}
+table(df$queue_id)
+```
+```{r}
+df %<>% filter(., queue_id==420)
+length(unique(df$match_id))
+```
+### Duplicates
+
+As we can see the dataset is in long format. 1 row = 1 player. In a soloQ
+match there are 10 players. 5 players each in 2 teams. We have 1216 unique matches, but there are 21360 rows. This clearly shows we have duplicates
+
+```{r}
+print(any(duplicated(df)))
+df <- df[!duplicated(df), ]
+length(unique(df$match_id))
+```
+the rows*10 and unique matches matches now, but we still need to check if ALL match ids are in count of 10
+
+```{r}
+table(table(df$match_id))
+```
+### Missing values
+
+```{r}
+sum(is.na(df))
+which(is.na(df), arr.ind = TRUE)
+colnames(df)[10]
+```
+The missing value is only team_position. We don't have to worry about that for now as we defenitely don't want to drop rows. That would mean losing 1 person for a 5 players team, which will disturb the balance later on.
+
+### Incomplete matches
+
+```{r}
+surrender_count <- aggregate(
+  game_ended_in_surrender ~ match_id,
+  data = df,
+  FUN = sum
+)
+
+table(surrender_count$game_ended_in_surrender)
+```
+there are 315 matches that ended in surrender, we don't want to lose too many matches, but we will drop any matches that ended before the first blood kill and first blood tower later after aggregating the data this is because game that ended even before first tower or first blood is not normal and just noise in our data
+
+### Data leakage
+
+Our model will be classifying the result of which team wins the game. This end of game statistic can be told by other variable. We need to drop these columns to not introduce data leakage to our model. Lets analyze the columns and decide what to drop
+
+```{r}
+colnames(df)
+```
+
+- nexus_kills/nexus_takedowns -> killing the nexus ends the game but team that kills the nexus can still surrender very rare edge case tho
+- turret and inhibitor takedowns/kills -> these variable don't explicitly tells us who wins the game but are very powerful
+
+- game_ended_in_(early)_surrender -> tells us only that the game ended in surrender, not which team surrendered
+- team_early_surrendered -> dataleakage
+
+Lets check these edge predictors agains target
+
+```{r}
+edge_leakage <- c("win",
+                  "nexus_kills",
+                  "nexus_takedowns",
+                  "turret_takedowns",
+                  "turret_kills",
+                  "inhibitor_takedowns",
+                  "inhibitor_kills",
+                  "game_ended_in_surrender",
+                  "game_ended_in_early_surrender",
+                  "team_early_surrendered")
+for (col in edge_leakage) {
+  cat("\n---", col, "---\n")
+  print(table(df[[col]], df$win))
+}
+```
+From the tables we can tell few things
+- nexus kills and takedowns are direct predictors. If any > 0 that means the team won so we will drop these columns
+
+- same with team_early_surrendered
+
+- game ended in (early) surrender carries 0 information about who won, so we can also just drop it
+
+- we will check other variables after aggregating the rows. We could only perform this table check for now
+
+
+```{r}
+leakage_cols <- c("nexus_kills",
+               "nexus_takedowns",
+               "team_early_surrendered",
+               "game_ended_in_surrender",
+               "game_ended_in_early_surrender")
+
+
+df <- df[, !(names(df) %in% leakage_cols)]
+```
+
+
+### Feature selection for aggregation
+
+Lets analyze the columns more and drop any that have no meaning for us
+
+```{r}
+colnames(df)
+
+drop_cols <- c("queue_id",
+               "champion_id",
+               "champion_name",
+               "champion_skin_id",
+               "team_position",
+               "individual_position",
+               "role",
+               "lane",
+               "summoner_1_id",
+               "summoner_2_id",
+               "spell_1_casts",
+               "spell_2_casts",
+               "spell_3_casts",
+               "spell_4_casts",
+               "eligible_for_progression",
+               "rune_primary_style",
+               "rune_secondary_style",
+               "rune_stat_defense",
+               "rune_stat_flex",
+               "rune_stat_offense",
+               "ban_1_champion_id",
+               "ban_2_champion_id",
+               "ban_3_champion_id",
+               "ban_4_champion_id",
+               "ban_5_champion_id")
+
+df <- df[, !(names(df) %in% drop_cols)]
+```
+
+- queue_id -> no need for that anymore
+- champion_id/name -> hard to implement for information
+- champion_skin_id -> same as above
+- individual/team_position -> no info
+- role/lane -> no info
+- summoner_1/2_id -> wont be able to use after aggregation
+- spell_x_casts -> irrelevant after aggregation, also differ heavely for champ
+- eligible_for_progression -> no info
+- all rune stats are useless
+- bans are also useless
+
+### Zero variance
+
+We will also check cols with zero variance and decide which to drop
+
+
+```{r}
+zero_var <- sapply(df, function(x) var(x, na.rm = TRUE))
+zero_var[zero_var == 0]
+```
+- unreal kills are not in the game for a few years, this is irrelevant for us 
+- sight wards bought in game is weird that noone bought it but we can drop it
+- effective heal and shielding basic, danger, hold and vision cleared pings are also not used we can drop them all
+
+```{r}
+cols_to_drop <- names(zero_var[zero_var == 0])
+df <- df[, !names(df) %in% cols_to_drop]
+```
+
+### Types convertion
+
+Now that we have almost clean data, last thing we need to do is to convert logical (TRUE/FALSE) datatypes to numeric. The only char type we have left is match_id which we will use to group the rows together
+
+
+```{r}
+df %<>% mutate(across(where(is.logical), as.numeric))
+```
+
+### Sanity check
+
+```{r}
+# each team in match should have 5 players 
+df %>% count(match_id, team_id) %>% filter(n != 5)
+# each match should have 2 teams
+df %>% group_by(match_id) %>% 
+  summarise(n_teams = n_distinct(team_id)) %>% 
+  filter(n_teams != 2)
+# each team in match should have one win value
+df %>% group_by(match_id, team_id) %>% 
+  summarise(n_win_vals = n_distinct(win), .groups="drop") %>% 
+  filter(n_win_vals != 1)
+# each match should have one winning and one loosing team
+df %>% group_by(match_id) %>% 
+  summarise(n_win_vals = n_distinct(win)) %>%
+  filter(n_win_vals != 2)
+```
+
+## Aggregation
+
+We analysed each column and decided how to aggregate them together. Unique value for each team will be selected with function first(). Any ratio feature will be aggregated using mean and any other are summed up.
+
+```{r}
+first_cols <- c("game_duration", "time_played", "win")
+mean_cols <- c("kda", "kill_participation", "gold_per_minute",
+               "vision_score_per_minute", "damage_per_minute")
+
+sum_cols <- setdiff(names(df), 
+                    c(first_cols, mean_cols,
+                      "match_id", "team_id"))
+
+# .names keeps the original name, without it we would get kda_mean or kills_sum
+team_agg <- df %>%
+  group_by(match_id, team_id) %>%
+  summarise(
+    across(all_of(first_cols), first, .names="{.col}"),
+    across(all_of(mean_cols), mean, .names="{.col}"),
+    across(all_of(sum_cols), sum, .names="{.col}"),
+    .groups = "drop"
+  )
+```
+
+
+## Pivot wide
+
+To have a nice clean dataset for our models we need to pivot the long format to wide where 1 row = 1 unique match. 
+
+```{r}
+# get all columns that should be pivoted (everything except id cols)
+value_cols <- setdiff(names(team_agg), c("match_id", "team_id", "team", "game_duration", "time_played"))
+
+wide_df <- team_agg %>%
+  group_by(match_id) %>%
+  mutate(team = paste0("team", team_id)) %>%
+  ungroup() %>%
+  pivot_wider(
+    id_cols = c(match_id, game_duration, time_played),
+    names_from = team,
+    values_from = all_of(value_cols),
+    names_glue = "{team}_{.value}"
+  )
+
+target <- wide_df$team100_win
+```
+
+
+After pivoting we have a lot of features but they are for both teams in one row. They are very redundant and they carry the same information. Team 1 kills are (almost) the same as Team 2 deaths and so on. We decided to compute diffs for all variables. We loose some information this way but it is much more practical for us.
+
+We also coded our target variable as 1 - team100 won, 0 - team200 won.
+
+```{r}
+diff_df <- wide_df %>%
+  mutate(across(
+    starts_with("team100_"),
+    ~ . - get(sub("team100_", "team200_", cur_column())),
+    .names = "{sub('team100_', 'diff_', .col)}"
+  )) %>%
+  select(match_id, game_duration, time_played, starts_with("diff_"))
+
+diff_df$target <- target
+diff_df$match_id <- NULL
+diff_df$diff_win <- NULL
+```
+
+
+## Eda (wide format data)
+
+Now that we have our data ready we will do some more EDA for this aggregated dataset to see what the data look like and get an idea what models we could use.
+
+### Noise
+
+As we discussed in section `Incomplete matches`, drop any noise game that ended before tower kill or first blood kill
+
+```{r}
+diff_df <- diff_df[diff_df$diff_first_blood_kill != 0, ]
+diff_df <- diff_df[diff_df$diff_first_tower_kill != 0, ]
+nrow(diff_df)
+```
+### Zero variance
+
+Check near zero variance again with aggregated data
+
+```{r}
+predictors <- setdiff(names(diff_df), "target")
+nzv <- nearZeroVar(diff_df[, predictors], saveMetrics = TRUE)
+drop_nzv <- rownames(nzv[nzv$nzv == TRUE, ])
+print(drop_nzv)
+diff_df <- diff_df[, !(names(diff_df) %in% drop_nzv)]
+```
+### Distributions and outliers
+
+We will check the distributions with histograms + qqplots and otliers with boxplots
+
+```{r}
+for (fet in names(diff_df)){
+  boxplot(diff_df[[fet]], main = fet, xlab = "")
+}
+```
+
+
+
+```{r}
+for (fet in names(diff_df)){
+  hist(diff_df[[fet]], main = fet, xlab = "")
+}
+```
+
+
+```{r}
+for (fet in names(diff_df)){
+  qqnorm(diff_df[[fet]], main = fet, xlab = "")
+  qqline(diff_df[[fet]], col="red")
+}
+```
+
+
+### Hypothesis testing
+
+#### RQ1
+RQ1: Is there a significant difference in the pings differential and their type between winning and losing teams?
+
+H0: The mean offensive ping differential is the same for winning and losing teams
+H1: The mean offensive ping differential differs between winning and losing teams
+p = 0.05
+
+Lets first prepare the data
+
+```{r}
+offensive_pings <- c("diff_push_pings", "diff_on_my_way_pings", "diff_assist_me_pings", "diff_all_in_pings")
+defensive_pings <- c("diff_retreat_pings", "diff_get_back_pings", "diff_enemy_vision_pings", "diff_enemy_missing_pings")
+
+all_pings <- grep("ping", names(diff_df), value = TRUE)
+all_pings <- rowSums(diff_df[, all_pings])
+
+offensive_ping_diff <- rowSums(diff_df[, offensive_pings])
+defensive_ping_diff <- rowSums(diff_df[, defensive_pings])
+hypothesis_df <- data.frame(offensive_ping_diff, defensive_ping_diff, all_pings, target = diff_df$target)
+
+```
+
+We need to check for normality to choose from correct statistical test
+
+```{r}
+shapiro.test(hypothesis_df$offensive_ping_diff)
+```
+Using Mann-Whitney U test because data is not normally distributed
+
+```{r}
+wilcox.test(offensive_ping_diff ~ target, data = hypothesis_df)
+```
+p < 0.05 Rejecting H0
+
+
+H0: The mean defensive ping differential is the same for winning and losing teams
+H1: The mean defensive ping differential differs between winning and losing teams
+alpha = 0.05
+
+```{r}
+shapiro.test(hypothesis_df$defensive_ping_diff)
+wilcox.test(defensive_ping_diff ~ target, data = hypothesis_df)
+```
+p < 0.05 Rejecting H0
+
+
+H0: The mean of all pings differential is the same for winning and losing teams
+H1: The mean of all pings differential differs between winning and losing teams
+alpha = 0.05
+
+```{r}
+shapiro.test(hypothesis_df$all_pings)
+wilcox.test(all_pings ~ target, data = hypothesis_df)
+```
+alpha < 0.05 Rejecting H0
+
+
+Lets also visualize our testing and findings
+
+```{r}
+ping_long <- data.frame(
+  outcome = rep(as.factor(hypothesis_df$target), 3),
+  ping_type = rep(c("Offensive", "Defensive", "All"), each = nrow(hypothesis_df)),
+  value = c(hypothesis_df$offensive_ping_diff, hypothesis_df$defensive_ping_diff, hypothesis_df$all_pings)
+)
+
+ggplot(ping_long, aes(x = outcome, y = value, fill = outcome)) +
+  geom_boxplot() +
+  facet_wrap(~ping_type, scales = "free_y") +
+  scale_fill_manual(values = c("0" = "red", "1" = "blue"),
+                    labels = c("Loss", "Win")) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  theme_minimal() +
+  labs(title = "Ping Differential: Winners vs Losers",
+       x = "Match Outcome",
+       y = "Ping Difference (team100 - team200)",
+       fill = "Outcome")
+```
+
+
+We find out from hypothesis that the pings do have meaning. We also want to know what type and how does it correlate to the match outcome
+
+
+```{r}
+cat("Offensive pings:\n")
+cat("  Winners:", mean(hypothesis_df$offensive_ping_diff[hypothesis_df$target == 1]), "\n")
+cat("  Losers: ", mean(hypothesis_df$offensive_ping_diff[hypothesis_df$target == 0]), "\n")
+
+cat("\nDefensive pings:\n")
+cat("  Winners:", mean(hypothesis_df$defensive_ping_diff[hypothesis_df$target == 1]), "\n")
+cat("  Losers: ", mean(hypothesis_df$defensive_ping_diff[hypothesis_df$target == 0]), "\n")
+
+cat("\nAll pings:\n")
+cat("  Winners:", mean(hypothesis_df$all_pings[hypothesis_df$target == 1]), "\n")
+cat("  Losers: ", mean(hypothesis_df$all_pings[hypothesis_df$target == 0]), "\n")
+
+```
+Interpretation:
+
+Winning teams use significantly more offensive pings than their opponents, while losing teams use significantly more defensive pings. This suggests that proactive communication (push, all-in, on my way) is associated with winning, while reactive  communication (retreat, get back, assist me) is a sign of a losing team that is constantly responding to the enemy's pressure. The total ping differential is positive for winners indicating that winning teams communicate more overall, but this effect is primarily driven by offensive ping usage.
+
+
+
+#### RQ2
+R2: Does early game advantage first blood + first tower significantly impact the result of the game ?
+
+H0: First blood and match outcome are independent
+H1: First blood and match outcome are not independent
+alpha = 0.05
+
+```{r}
+fb_table <- table(diff_df$diff_first_blood_kill, diff_df$target)
+chisq.test(fb_table)
+```
+p > 0.05 cannot reject H0
+
+
+H0: First tower and match outcome are independent
+H1: First tower and match outcome are not independent
+alpha = 0.05
+
+
+```{r}
+ft_table <- table(diff_df$diff_first_tower_kill, diff_df$target)
+chisq.test(ft_table)
+```
+
+p < 0.05 we reject H0, tower kill and match outcome are significantly depended
+
+
+H0: First tower combined with first blood, and match outcome are independent
+H1: First tower combined with first blood, and match outcome are not independent
+alpha = 0.05
+
+```{r}
+diff_df$early_advantage <- diff_df$diff_first_blood_kill + diff_df$diff_first_tower_kill
+ea_table <- table(diff_df$early_advantage, diff_df$target)
+chisq.test(ea_table)
+```
+p < 0.05 we reject H0, tower kill combined with first blood, and match outcome are significantly depended
+
+```{r}
+win_rates <- tapply(diff_df$target, diff_df$early_advantage, mean)
+cat("Win rate by early advantage score:\n")
+print(round(win_rates, 4))
+```
+
+Interpretation: 
+First blood alone does not significantly predict match outcome. However, first tower is a highly significant predictor. The combined early game advantage shows a clear pattern: teams that secured neither objective won only 28.6% of games, teams that split objectives won 49.5%, and teams that secured both won 70.8%. This suggests that first tower is the key early game objective, while first blood provides a smaller, non-significant advantage on its own.
+
+```{r}
+comparison_df <- data.frame(
+  objective = c("First Blood", "First Blood", "First Tower", "First Tower"),
+  got_it = c("Yes", "No", "Yes", "No"),
+  win_rate = c(
+    mean(diff_df$target[diff_df$diff_first_blood_kill == 1]),
+    mean(diff_df$target[diff_df$diff_first_blood_kill == -1]),
+    mean(diff_df$target[diff_df$diff_first_tower_kill == 1]),
+    mean(diff_df$target[diff_df$diff_first_tower_kill == -1])
+  )
+)
+
+ggplot(comparison_df, aes(x = objective, y = win_rate, fill = got_it)) +
+  geom_col(position = "dodge") +
+  geom_text(aes(label = paste0(round(win_rate * 100, 1), "%")),
+            position = position_dodge(width = 0.9), vjust = -0.5, size = 4) +
+  scale_fill_manual(values = c("No" = "red", "Yes" = "blue")) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "grey50") +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 0.8)) +
+  theme_minimal() +
+  labs(title = "First Blood vs First Tower: Impact on Win Rate",
+       x = "Objective", y = "Win Rate", fill = "Secured?")
+```
+
+
+### High Correlation
+
+Because we have ~60 features a heatmap would be unreadable. We will implement function that helps us look trought the most correlated features.
+
+```{r}
+get_high_cor <- function(df){
+  predictors <- setdiff(names(df), "target")
+  cor_matrix <- cor(df[, predictors], use = "complete.obs")
+  
+  # Correlation of each predictor with target
+  target_cor <- cor(df[, predictors], df$target, use = "complete.obs")[, 1]
+  
+  # Get upper triangle pairs only (avoid duplicates)
+  pairs <- which(upper.tri(cor_matrix), arr.ind = TRUE)
+  
+  cor_list <- data.frame(
+    feature_1 = rownames(cor_matrix)[pairs[, 1]],
+    feature_2 = colnames(cor_matrix)[pairs[, 2]],
+    correlation = round(cor_matrix[pairs], 4),
+    abs_correlation = round(abs(cor_matrix[pairs]), 4),
+    target_cor_1 = round(target_cor[rownames(cor_matrix)[pairs[, 1]]], 4),
+    target_cor_2 = round(target_cor[colnames(cor_matrix)[pairs[, 2]]], 4),
+    stringsAsFactors = FALSE
+  )
+  
+  # Sort by absolute correlation descending
+  cor_list <- cor_list[order(cor_list$abs_correlation, decreasing = TRUE), ]
+  
+  # Show only |r| >= 0.8
+  high_cor <- cor_list[cor_list$abs_correlation >= 0.8, ]
+  return(high_cor)
+}
+```
+
+```{r}
+get_high_cor(diff_df)
+```
+
+
+We implement algorithmic approach that drops feature that has the most correlated features that are >= 0.8
+
+```{r}
+predictors <- setdiff(names(diff_df), "target")
+remaining <- predictors
+dropped <- c()
+
+while (TRUE) {
+  cor_matrix <- cor(diff_df[, remaining], use = "complete.obs")
+  diag(cor_matrix) <- 0
+  
+  # Count how many features each feature correlates with at |r| >= 0.8
+  high_cor_count <- sapply(remaining, function(f) {
+    sum(abs(cor_matrix[f, ]) >= 0.8)
+  })
+  
+  # Stop if no more high correlations
+  if (max(high_cor_count) == 0) break
+  
+  # Drop the feature with the most high correlations
+  worst <- names(which.max(high_cor_count))
+  
+  dropped <- c(dropped, worst)
+  remaining <- setdiff(remaining, worst)
+}
+```
+
+Features that we dropped and their correlation to target
+
+```{r}
+cor(diff_df[, dropped], diff_df$target, use = "complete.obs")[, 1]
+```
+```{r}
+clean <- diff_df[, c("target", remaining)]
+dim(clean)
+write.csv2(clean, "processed.csv")
+```
