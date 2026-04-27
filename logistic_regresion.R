@@ -1,6 +1,3 @@
-library(caret) #createDataPartition
-library(car) # model
-
 # Assumptions of Logicstic Regression
 
 # 1. Independent observations
@@ -20,7 +17,7 @@ library(car) # model
 
 # We have to deal with 3. 4. and 6.
 
-# Load data
+# ================ LOAD DATA ================
 df <- read.csv2("processed.csv")
 df <- df[, -1]  # drops the first column (index)
 
@@ -28,32 +25,61 @@ df <- df[, -1]  # drops the first column (index)
 dim(df)
 
 
-# --- SPLIT ---
+# ================ SPLIT ================
+library(caret) #createDataPartition
 set.seed(67) # replicability
-index <- createDataPartition(df$team100_win, p = 0.8, list = FALSE)
+index <- createDataPartition(df$target, p = 0.8, list = FALSE)
 train_data <- df[index, ]
 test_data  <- df[-index, ]
 
 
-# We dropped highly (>=0.8) correlated predictors in EDA+preprocessing
-# After consulting with lecturer we remove very strong predictors
-# which are turret and inhibitor data
+
+# ================ LOG-ODDS RELATIONSHIP ================
+
+plot_logistic <- function(df, feature) {
+  ggplot(df, aes(x = .data[[feature]], y = target)) +
+    geom_point(alpha = 0.3) +
+    geom_smooth(method = "glm", method.args = list(family = "binomial"), se = FALSE) +
+    labs(x = feature, y = "P(target = 1)") +
+    theme_minimal()
+}
+
+pdf("logistic_plots.pdf")
+lapply(names(train_data), function(f) plot_logistic(train_data, f))
+dev.off()
+
+# We selected only features that copy sigmoid
+
+predictors <- c("diff_assists",
+                "diff_triple_kills",
+                "diff_largest_multi_kill",
+                "diff_killing_sprees",
+                "diff_total_damage_dealt",
+                "diff_total_damage_taken",
+                "diff_physical_damage_dealt",
+                "diff_true_damage_dealt",
+                "diff_gold_spent",
+                "diff_total_enemy_jungle_minions_killed",
+                "diff_dragon_kills",
+                "diff_baron_kills",
+                "diff_inhibitor_takedowns",
+                "diff_total_heal",
+                "diff_solo_kills",
+                "diff_outnumbered_kills"
+)
+
+train_data <- train_data[, c("target", predictors)]
+test_data <- test_data[, c("target", predictors)]
 
 
-to_drop <- c("team100_turret_takedowns", "team100_inhibitor_takedowns",
-             "team200_turret_takedowns", "team200_inhibitor_kills")
-
-train_data <- train_data[, !names(train_data) %in% to_drop]
-test_data <- test_data[, !names(test_data) %in% to_drop]
-
-
+# ================ VIF CHECK ================
 # Iterative VIF removal
 threshold <- 5
-current_predictors <- setdiff(names(train_data), "team100_win")
-
+current_predictors <- setdiff(names(train_data), "target")
+library(car) # model
 repeat {
   current_formula <- as.formula(
-    paste("team100_win ~", paste(current_predictors, collapse = " + "))
+    paste("target ~", paste(current_predictors, collapse = " + "))
   )
   current_model <- glm(current_formula, data = train_data, family = "binomial")
   
@@ -66,98 +92,60 @@ repeat {
   current_predictors <- setdiff(current_predictors, drop)
 }
 
+# Before VIF
+length(predictors)
 #After VIF cleanup
 #Remaining features
 length(current_predictors)
 # Converged
 current_model$converged
 
-train_data <- train_data[, c("team100_win", current_predictors)]
-test_data <- test_data[, c("team100_win", current_predictors)]
+train_data <- train_data[, c("target", current_predictors)]
+test_data <- test_data[, c("target", current_predictors)]
 
-
-
-predictors <- setdiff(names(train_data), "team100_win")
-
-par(mfrow = c(3, 3))
-
-for (feat in predictors) {
+# ================ EXTREME OUTLIERS CHECK ================
+# beyond 3*IQR is extreme
+for (feat in names(train_data)) {
   x <- train_data[[feat]]
-  y <- train_data$team100_win
+  Q1 <- quantile(x, 0.25)
+  Q3 <- quantile(x, 0.75)
+  IQR_val <- Q3 - Q1
   
-  # Bin the predictor into 10 groups
-  bins <- cut(x, breaks = 10, include.lowest = TRUE)
+  extreme <- which(x < Q1 - 3 * IQR_val | x > Q3 + 3 * IQR_val)
   
-  # For each bin, calculate the log-odds
-  bin_means <- tapply(x, bins, mean)
-  bin_logodds <- tapply(y, bins, function(p) {
-    p_hat <- mean(p)
-    p_hat <- pmax(pmin(p_hat, 0.999), 0.001)
-    log(p_hat / (1 - p_hat))
-  })
-  
-  plot(bin_means, bin_logodds,
-       main = feat, cex.main = 0.7,
-       xlab = "Predictor value (bin mean)",
-       ylab = "Log-odds",
-       pch = 19)
-  abline(lm(bin_logodds ~ bin_means), col = "red")
+  if (length(extreme) > 0) {
+    cat(sprintf("%-45s extreme outliers: %d (%.2f%%)\n",
+                feat, length(extreme),
+                length(extreme) / length(x) * 100))
+  }
 }
 
+# Winsorize (cap at 3 standard deviations)
+for (feat in names(train_data)) {
+  x <- train_data[[feat]]
+  mu <- mean(x)
+  s <- sd(x)
+  train_data[[feat]] <- pmax(pmin(x, mu + 3*s), mu - 3*s)
+  
+  # Apply same caps to test set using TRAIN mean/sd
+  test_data[[feat]] <- pmax(pmin(test_data[[feat]], mu + 3*s), mu - 3*s)
+}
+
+# We dont have much to do with these outliers
+# but we also dont count them as outliers
+hist(train_data$diff_triple_kills)
+boxplot(train_data$diff_triple_kills)
 
 
+# ================ MODEL FIT ================
+model <- glm(target ~ ., data = train_data, family = "binomial")
+model
+summary(model)
+train_probs <- predict(model, type = "response")
+mean((train_probs > 0.5) == train_data$target)
 
-
-
-
-
-
-
-
-
-# We dont want the model to overfit so we will check EPV
-# and calculate how many features should we drop
-n_events <- min(table(train_data$team100_win))
-n_predictors <- length(current_predictors)
-epv <- n_events / n_predictors
-
-# our EPV (we aim for >= 10)
-epv
-# Max predictors we can afford
-goal <- floor(n_events / 10)
-goal
-# we need to drop this many features
-drop_count <- n_predictors - goal
-drop_count
-
-
-# Calculate absolute correlation with target
-target_cor <- sapply(current_predictors, function(f) {
-  abs(cor(train_data[[f]], train_data$team100_win, use = "complete.obs"))
-})
-
-# Sort from weakest to strongest
-target_cor_sorted <- sort(target_cor)
-
-
-# Drop the bottom N features
-drop_weak <- names(target_cor_sorted)[1:drop_count]
-remaining <- setdiff(current_predictors, drop_weak)
-length(remaining)
-
-# Check new EPV
-round(n_events / length(remaining), 1)
-
-# Apply
-train_data <- train_data[, c("team100_win", remaining)]
-test_data <- test_data[, c("team100_win", remaining)]
-
-# Refit and check
-model <- glm(team100_win ~ ., data = train_data, family = "binomial")
-
-
-
-
+test_probs <- predict(model, newdata = test_data, type = "response")
+mean((test_probs > 0.5) == test_data$target)
 
 
 

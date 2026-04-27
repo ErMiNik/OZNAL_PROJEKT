@@ -1,8 +1,11 @@
 # Normality check
+# We will use both visual techniques and shapiros willk test based on paper
+# https://pmc.ncbi.nlm.nih.gov/articles/PMC3693611/
+
 
 library(e1071)
 
-predictors <- setdiff(names(train_data), "team100_win")
+predictors <- setdiff(names(train_data), "target")
 
 results <- data.frame(
   feature = character(),
@@ -21,7 +24,7 @@ fail <- train_data
 for (feat in predictors) {
   x <- train_data[[feat]][!is.na(train_data[[feat]])]
   
-  sh <- shapiro.test(x)
+  sh <- ks.test(x)
   sk <- skewness(x)
   kt <- kurtosis(x)
   
@@ -58,16 +61,22 @@ dim(pass)
 dim(fail)
 
 
+results
 
+hist(train_data$diff_longest_time_spent_living)
+shapiro.test(train_data$diff_longest_time_spent_living)
+
+hist(train_data$diff_items_purchased)
+shapiro.test(train_data$diff_items_purchased)
 
 
 # 3. Q-Q plots for visual inspection (saves to PDF)
-pdf("qq_fail.pdf", width = 12, height = 10)
+pdf("qq_pass.pdf", width = 12, height = 10)
 par(mfrow = c(3, 3))
-predictors <- names(fail)
+predictors <- names(pass)
 for (feat in predictors) {
-  qqnorm(fail[[feat]], main = feat, cex.main = 0.8)
-  qqline(fail[[feat]], col = "red")
+  qqnorm(pass[[feat]], main = feat, cex.main = 0.8)
+  qqline(pass[[feat]], col = "red")
 }
 dev.off()
 
