@@ -4,7 +4,6 @@
 # we will be modeling post-game results not pre-game prediction
 
 
-
 # load EDA libraries
 
 library(tidyverse)
@@ -82,6 +81,29 @@ colnames(df)[10]
 # balance later on
 
 
+
+
+# Count surrenders per match
+surrender_count <- aggregate(
+  game_ended_in_surrender ~ match_id,
+  data = df,
+  FUN = sum
+)
+
+cat("Matches with early surrender:\n")
+print(table(surrender_count$game_ended_in_surrender))
+
+
+
+# there are 315 matches that ended in surrender, we dont want to lose too many
+# matches, but we will drop any matches that ended before the first blood kill
+# and first blood tower later after aggregating the data
+# this is because game that ended even before first tower or
+# first blood is not normal and just noise in our data
+
+
+
+
 # Data leakage
 # our model will be predicting the result of which team
 # wins the game
@@ -139,6 +161,7 @@ leakage_cols <- c("nexus_kills",
                "game_ended_in_surrender",
                "game_ended_in_early_surrender")
 
+
 df <- df[, !(names(df) %in% leakage_cols)]
 
 
@@ -182,6 +205,8 @@ drop_cols <- c("queue_id",
                "ban_5_champion_id")
 
 df <- df[, !(names(df) %in% drop_cols)]
+
+# We want to exclude any games that 
 
 
 # we will also check cols with zero variance and decide which to drop
@@ -379,7 +404,7 @@ wide_df <- team_agg %>%
 
 target <- wide_df$team100_win
 
-# After your pivot_wider, compute diffs for all value_cols
+# After pivot_wider, compute diffs for all value_cols
 diff_df <- wide_df %>%
   mutate(across(
     starts_with("team100_"),
@@ -391,6 +416,33 @@ diff_df <- wide_df %>%
 diff_df$target <- target
 diff_df$match_id <- NULL
 diff_df$diff_win <- NULL
+
+
+
+
+# As we discussed above, drop any noise game that ended before tower kill or first blood kill
+
+cat("First blood = 0:", sum(diff_df$diff_first_blood_kill == 0), "\n")
+
+# Remove them
+diff_df <- diff_df[diff_df$diff_first_blood_kill != 0, ]
+
+
+# Now the values should only be 1 and -1
+print(table(diff_df$diff_first_blood_kill))
+
+
+cat("First tower = 0:", sum(diff_df$diff_first_tower_kill == 0), "\n")
+
+# If there are zeros, remove them too
+diff_df <- diff_df[diff_df$diff_first_tower_kill != 0, ]
+
+print(table(diff_df$diff_first_tower_kill))
+
+cat("Rows remaining:", nrow(diff_df), "\n")
+
+
+
 
 
 predictors <- setdiff(names(diff_df), "target")
@@ -406,6 +458,211 @@ remaining <- setdiff(predictors, drop_nzv)
 diff_df <- diff_df[, !(names(diff_df) %in% drop_nzv)]
 
 dim(diff_df)
+
+
+# ==================== RESEARCH QUESTIONS ====================
+# RQ1: 
+# Is there a significant difference in the pings differential and their 
+# type between winning and losing teams?
+
+
+
+
+offensive_pings <- c("diff_push_pings", "diff_on_my_way_pings", "diff_assist_me_pings", "diff_all_in_pings")
+defensive_pings <- c("diff_retreat_pings", "diff_get_back_pings", "diff_enemy_vision_pings", "diff_enemy_missing_pings")
+
+all_pings <- grep("ping", names(diff_df), value = TRUE)
+all_pings <- rowSums(diff_df[, all_pings])
+offensive_ping_diff <- rowSums(diff_df[, offensive_pings])
+defensive_ping_diff <- rowSums(diff_df[, defensive_pings])
+hypothesis_df <- data.frame(offensive_ping_diff, defensive_ping_diff, all_pings, target = diff_df$target)
+
+# p = 0.05
+# H0: The mean offensive ping differential is the same for winning and losing teams
+# H1: The mean offensive ping differential differs between winning and losing teams
+
+library(moments)
+shapiro.test(hypothesis_df$offensive_ping_diff)
+# using Mann-Whitney U test because data is not normally distributed
+wilcox.test(offensive_ping_diff ~ target, data = hypothesis_df)
+
+# p < 0.05 Rejecting H0
+
+
+# p = 0.05
+# H0: The mean defensive ping differential is the same for winning and losing teams
+# H1: The mean defensive ping differential differs between winning and losing teams
+
+shapiro.test(hypothesis_df$defensive_ping_diff)
+# using Mann-Whitney U test because data is not normally distributed
+wilcox.test(defensive_ping_diff ~ target, data = hypothesis_df)
+
+# p < 0.05 Rejecting H0
+
+
+# p = 0.05
+# H0: The mean of all pings differential is the same for winning and losing teams
+# H1: The mean of all pings differential differs between winning and losing teams
+
+shapiro.test(hypothesis_df$all_pings)
+# using Mann-Whitney U test because data is not normally distributed
+wilcox.test(all_pings ~ target, data = hypothesis_df)
+
+# p < 0.05 Rejecting H0
+
+
+ping_long <- data.frame(
+  outcome = rep(as.factor(hypothesis_df$target), 3),
+  ping_type = rep(c("Offensive", "Defensive", "All"), each = nrow(hypothesis_df)),
+  value = c(hypothesis_df$offensive_ping_diff, hypothesis_df$defensive_ping_diff, hypothesis_df$all_pings)
+)
+
+ggplot(ping_long, aes(x = outcome, y = value, fill = outcome)) +
+  geom_boxplot() +
+  facet_wrap(~ping_type, scales = "free_y") +
+  scale_fill_manual(values = c("0" = "red", "1" = "blue"),
+                    labels = c("Loss", "Win")) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  theme_minimal() +
+  labs(title = "Ping Differential: Winners vs Losers",
+       x = "Match Outcome",
+       y = "Ping Difference (team100 - team200)",
+       fill = "Outcome")
+
+cat("=== Mean Ping Differentials ===\n\n")
+cat("Offensive pings:\n")
+cat("  Winners:", mean(hypothesis_df$offensive_ping_diff[hypothesis_df$target == 1]), "\n")
+cat("  Losers: ", mean(hypothesis_df$offensive_ping_diff[hypothesis_df$target == 0]), "\n")
+
+cat("\nDefensive pings:\n")
+cat("  Winners:", mean(hypothesis_df$defensive_ping_diff[hypothesis_df$target == 1]), "\n")
+cat("  Losers: ", mean(hypothesis_df$defensive_ping_diff[hypothesis_df$target == 0]), "\n")
+
+cat("\nAll pings:\n")
+cat("  Winners:", mean(hypothesis_df$all_pings[hypothesis_df$target == 1]), "\n")
+cat("  Losers: ", mean(hypothesis_df$all_pings[hypothesis_df$target == 0]), "\n")
+
+
+# Interpretation
+
+# Winning teams use significantly more offensive pings 
+# than their opponents, while losing teams use significantly more defensive 
+# pings. This suggests that proactive communication 
+# (push, all-in, on my way) is associated with winning, while reactive 
+# communication (retreat, get back, assist me) is a sign of a losing team 
+# that is constantly responding to the enemy's pressure. The total ping 
+# differential is positive for winners indicating that winning teams
+# communicate more overall, but this effect is primarily driven by offensive 
+# ping usage.
+
+
+
+# R2:
+# Does early game advantage first blood + first tower
+# significantly impact the result of the game ?
+
+
+
+
+cat("First blood values:\n")
+print(table(diff_df$diff_first_blood_kill))
+
+cat("\nFirst tower values:\n")
+print(table(diff_df$diff_first_tower_kill))
+
+
+cat("\n=== First Blood ===\n")
+print(table(diff_df$diff_first_blood_kill, diff_df$target))
+
+cat("\n=== First Tower ===\n")
+print(table(diff_df$diff_first_tower_kill, diff_df$target))
+
+
+# H0: First blood and match outcome are independent
+# H1: First blood and match outcome are not independent
+# p = 0.05
+
+cat("\n=== Chi-Square Test: First Blood ===\n")
+fb_table <- table(diff_df$diff_first_blood_kill, diff_df$target)
+chisq.test(fb_table)
+
+# p > 0.05 cannot reject H0
+
+
+
+
+# H0: First tower and match outcome are independent
+# H1: First tower and match outcome are not independent
+
+cat("\n=== Chi-Square Test: First Tower ===\n")
+ft_table <- table(diff_df$diff_first_tower_kill, diff_df$target)
+chisq.test(ft_table)
+
+# p < 0.05 we reject H0, tower kill and match outcome are significantly depended
+
+
+# ============================================
+# Combined: Early game advantage
+# ============================================
+# Create combined variable
+diff_df$early_advantage <- diff_df$diff_first_blood_kill + diff_df$diff_first_tower_kill
+
+cat("\n=== Early Advantage Distribution ===\n")
+print(table(diff_df$early_advantage, diff_df$target))
+
+cat("\n=== Chi-Square Test: Early Advantage ===\n")
+ea_table <- table(diff_df$early_advantage, diff_df$target)
+chisq.test(ea_table)
+
+
+cat("\n=== Win Rates ===\n")
+win_rates <- tapply(diff_df$target, diff_df$early_advantage, mean)
+cat("Win rate by early advantage score:\n")
+print(round(win_rates, 4))
+
+
+
+
+# Interpretation
+# First blood alone does not significantly predict match outcome.
+# However, first tower is a highly significant predictor.
+# The combined early game advantage shows a clear dose-response
+# pattern: teams that secured neither objective
+# won only 28.6% of games, teams that split objectives won 49.5%, and teams
+# that secured both won 70.8%. This suggests that first tower is the key
+# early game objective, while first blood provides a smaller, non-significant
+# advantage on its own.
+
+
+comparison_df <- data.frame(
+  objective = c("First Blood", "First Blood", "First Tower", "First Tower"),
+  got_it = c("Yes", "No", "Yes", "No"),
+  win_rate = c(
+    mean(diff_df$target[diff_df$diff_first_blood_kill == 1]),
+    mean(diff_df$target[diff_df$diff_first_blood_kill == -1]),
+    mean(diff_df$target[diff_df$diff_first_tower_kill == 1]),
+    mean(diff_df$target[diff_df$diff_first_tower_kill == -1])
+  )
+)
+
+ggplot(comparison_df, aes(x = objective, y = win_rate, fill = got_it)) +
+  geom_col(position = "dodge") +
+  geom_text(aes(label = paste0(round(win_rate * 100, 1), "%")),
+            position = position_dodge(width = 0.9), vjust = -0.5, size = 4) +
+  scale_fill_manual(values = c("No" = "red", "Yes" = "blue")) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "grey50") +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 0.8)) +
+  theme_minimal() +
+  labs(title = "First Blood vs First Tower: Impact on Win Rate",
+       x = "Objective", y = "Win Rate", fill = "Secured?")
+
+
+
+
+
+
+
+
 
 clean_wide <- diff_df
 # ==================== HIGH CORRELATION ==================== 
