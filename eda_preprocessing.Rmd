@@ -21,6 +21,7 @@ RQ2: Does early game advantage first blood + first tower significantly impact th
 Lets load data and do basic exploratory
 
 ```{r}
+library(tidyverse)
 df <- read_csv("data.csv")
 print(dim(df))
 print(colnames(df))
@@ -37,7 +38,8 @@ There is a queue_id which divides the matches into different groups of gamemodes
 table(df$queue_id)
 ```
 ```{r}
-df %<>% filter(., queue_id==420)
+library(magrittr)
+df %<>% dplyr::filter(., queue_id==420)
 length(unique(df$match_id))
 ```
 ### Duplicates
@@ -310,7 +312,7 @@ Check near zero variance again with aggregated data
 
 ```{r}
 predictors <- setdiff(names(diff_df), "target")
-nzv <- nearZeroVar(diff_df[, predictors], saveMetrics = TRUE)
+nzv <- caret::nearZeroVar(diff_df[, predictors], saveMetrics = TRUE)
 drop_nzv <- rownames(nzv[nzv$nzv == TRUE, ])
 print(drop_nzv)
 diff_df <- diff_df[, !(names(diff_df) %in% drop_nzv)]
