@@ -21,6 +21,7 @@ RQ2: Does early game advantage first blood + first tower significantly impact th
 Lets load data and do basic exploratory
 
 ```{r}
+set.seed(67)
 library(tidyverse)
 df <- read_csv("data.csv")
 print(dim(df))
@@ -317,31 +318,6 @@ drop_nzv <- rownames(nzv[nzv$nzv == TRUE, ])
 print(drop_nzv)
 diff_df <- diff_df[, !(names(diff_df) %in% drop_nzv)]
 ```
-### Distributions and outliers
-
-We will check the distributions with histograms + qqplots and otliers with boxplots
-
-```{r}
-for (fet in names(diff_df)){
-  boxplot(diff_df[[fet]], main = fet, xlab = "")
-}
-```
-
-
-
-```{r}
-for (fet in names(diff_df)){
-  hist(diff_df[[fet]], main = fet, xlab = "")
-}
-```
-
-
-```{r}
-for (fet in names(diff_df)){
-  qqnorm(diff_df[[fet]], main = fet, xlab = "")
-  qqline(diff_df[[fet]], col="red")
-}
-```
 
 
 ### Hypothesis testing
@@ -481,14 +457,14 @@ H1: First tower combined with first blood, and match outcome are not independent
 alpha = 0.05
 
 ```{r}
-diff_df$early_advantage <- diff_df$diff_first_blood_kill + diff_df$diff_first_tower_kill
-ea_table <- table(diff_df$early_advantage, diff_df$target)
+tmp <- data.frame(early_advantage = diff_df$diff_first_blood_kill + diff_df$diff_first_tower_kill, target=diff_df$target)
+ea_table <- table(tmp$early_advantage, tmp$target)
 chisq.test(ea_table)
 ```
 p < 0.05 we reject H0, tower kill combined with first blood, and match outcome are significantly depended
 
 ```{r}
-win_rates <- tapply(diff_df$target, diff_df$early_advantage, mean)
+win_rates <- tapply(tmp$target, tmp$early_advantage, mean)
 cat("Win rate by early advantage score:\n")
 print(round(win_rates, 4))
 ```
@@ -521,9 +497,164 @@ ggplot(comparison_df, aes(x = objective, y = win_rate, fill = got_it)) +
 ```
 
 
-### High Correlation
 
-Because we have ~60 features a heatmap would be unreadable. We will implement function that helps us look trought the most correlated features.
+
+
+
+### Distributions and outliers
+
+We will check the distributions with histograms + qqplots and otliers with boxplots
+
+```{r}
+for (fet in names(diff_df)){
+  boxplot(diff_df[[fet]], main = fet, xlab = "")
+}
+```
+
+
+```{r}
+for (fet in names(diff_df)){
+  hist(diff_df[[fet]], main = fet, xlab = "")
+}
+```
+
+
+```{r}
+for (fet in names(diff_df)){
+  qqnorm(diff_df[[fet]], main = fet, xlab = "")
+  qqline(diff_df[[fet]], col="red")
+}
+```
+
+
+
+```{r}
+detect_outliers <- function(df) {
+  numeric_cols <- names(df)[sapply(df, is.numeric)]
+  
+  results <- data.frame(
+    Feature = character(),
+    Outlier_Count = integer(),
+    Total = integer(),
+    Pct = numeric(),
+    Lower_Bound = numeric(),
+    Upper_Bound = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  for (col in numeric_cols) {
+    x <- df[[col]]
+    x_clean <- x[!is.na(x)]
+    
+    Q1 <- quantile(x_clean, 0.25)
+    Q3 <- quantile(x_clean, 0.75)
+    IQR_val <- Q3 - Q1
+    
+    lower <- Q1 - 1.5 * IQR_val
+    upper <- Q3 + 1.5 * IQR_val
+    
+    n_outliers <- sum(x_clean < lower | x_clean > upper)
+    
+    if (n_outliers > 0) {
+      results <- rbind(results, data.frame(
+        Feature = col,
+        Outlier_Count = n_outliers,
+        Total = length(x_clean),
+        Pct = round(n_outliers / length(x_clean) * 100, 2),
+        Lower_Bound = round(lower, 2),
+        Upper_Bound = round(upper, 2)
+      ))
+    }
+  }
+  
+  results <- results[order(-results$Outlier_Count), ]
+  
+  cat("===== Outlier Report =====\n\n")
+  for (i in seq_len(nrow(results))) {
+    r <- results[i, ]
+    cat(sprintf("%-25s | %d outliers out of %d (%.2f%%)\n", 
+                r$Feature, r$Outlier_Count, r$Total, r$Pct))
+    cat(sprintf("  Bounds: [%.2f, %.2f]\n\n", r$Lower_Bound, r$Upper_Bound))
+  }
+  
+  invisible(results)
+}
+```
+
+
+```{r}
+outlier_report <- detect_outliers(diff_df)
+```
+
+lets leave the <1% as they are. We can see a huge % outliers for features having small range, these are discrete data that we will not cap or drop. We will cap 1-10%. This is enough to skew results but not so many that the distribution is the issue. We will check >10% manually.
+
+
+```{r}
+auto_cap <- outlier_report$Feature[outlier_report$Pct >= 1 & outlier_report$Pct <= 5 & sapply(diff_df[outlier_report$Feature], function(x) length(unique(na.omit(x)))) >= 20]
+
+manual_check <- outlier_report$Feature[outlier_report$Pct > 10 & sapply(diff_df[outlier_report$Feature], function(x) length(unique(na.omit(x)))) >= 20]
+```
+
+
+```{r}
+cap_outliers <- function(df, cols) {
+  for (col in cols) {
+    x <- df[[col]]
+    Q1 <- quantile(x, 0.25, na.rm = TRUE)
+    Q3 <- quantile(x, 0.75, na.rm = TRUE)
+    IQR_val <- Q3 - Q1
+    lower <- Q1 - 1.5 * IQR_val
+    upper <- Q3 + 1.5 * IQR_val
+    df[[col]] <- pmin(pmax(x, lower), upper)
+  }
+  df
+}
+```
+
+
+```{r}
+outlier_free <- cap_outliers(diff_df, auto_cap)
+```
+
+
+Lets analyze the >10% features
+
+
+```{r}
+for (fet in manual_check){
+  par(mfrow = c(1,2))
+  
+  hist(diff_df[[fet]], main=fet, ylab="", xlab="")
+  boxplot(diff_df[[fet]], main=fet)
+  par(mfrow = c(1,1))
+}
+```
+There are many outliers but we want to keep the information, we will signed log transform them.
+
+
+```{r}
+for (fet in manual_check){
+  par(mfrow = c(1,2))
+  hist(sign(diff_df[[fet]]) * log1p(abs(diff_df[[fet]])),
+       main=fet, ylab="", xlab="")
+  boxplot(sign(diff_df[[fet]]) * log1p(abs(diff_df[[fet]])),
+          main=fet)
+  par(mfrow = c(1,1))
+  print(shapiro.test(sign(diff_df[[fet]]) * log1p(abs(diff_df[[fet]]))))
+}
+```
+They look much better, lets apply the transformation to all of them, we can do this before split, because log transform is a row-wise operation, that means no data leakage.
+
+```{r}
+outlier_free[paste0("log_", manual_check)] <- lapply(outlier_free[manual_check], function(x) sign(x) * log1p(abs(x)))
+outlier_free <- outlier_free[, !(names(outlier_free) %in% manual_check)]
+```
+
+
+
+### Multicolinearity
+
+Because we have ~60 features a heat map would be unreadable. We will implement function that helps us look trough the most correlated features.
 
 ```{r}
 get_high_cor <- function(df){
@@ -556,19 +687,19 @@ get_high_cor <- function(df){
 ```
 
 ```{r}
-get_high_cor(diff_df)
+get_high_cor(outlier_free)
 ```
 
 
 We implement algorithmic approach that drops feature that has the most correlated features that are >= 0.8
 
 ```{r}
-predictors <- setdiff(names(diff_df), "target")
+predictors <- setdiff(names(outlier_free), "target")
 remaining <- predictors
 dropped <- c()
 
 while (TRUE) {
-  cor_matrix <- cor(diff_df[, remaining], use = "complete.obs")
+  cor_matrix <- cor(outlier_free[, remaining], use = "complete.obs")
   diag(cor_matrix) <- 0
   
   # Count how many features each feature correlates with at |r| >= 0.8
@@ -590,10 +721,63 @@ while (TRUE) {
 Features that we dropped and their correlation to target
 
 ```{r}
-cor(diff_df[, dropped], diff_df$target, use = "complete.obs")[, 1]
+cor(outlier_free[, dropped], outlier_free$target, use = "complete.obs")[, 1]
 ```
+
+
 ```{r}
-clean <- diff_df[, c("target", remaining)]
+correlation_free <- outlier_free[, c("target", remaining)]
+```
+
+
+We are still gonna check the VIF to make sure no multicorelation remains. We iteratively drop features with VIF \> 5.
+
+```{r}
+library(car)
+remove_vif <- function(df, threshold){
+  current_predictors <- setdiff(names(df), "target")
+  repeat {
+    current_formula <- as.formula(
+      paste("target ~", paste(current_predictors, collapse = " + "))
+    )
+    current_model <- glm(current_formula, data = df, family = "binomial")
+    
+    vif_vals <- vif(current_model)
+    max_vif <- max(vif_vals)
+    
+    if (max_vif <= threshold) break
+    
+    drop <- names(which.max(vif_vals))
+    current_predictors <- setdiff(current_predictors, drop)
+  }
+  return(current_predictors)
+}
+```
+
+
+
+Before doing VIF check
+
+```{r}
+length(names(correlation_free))
+```
+
+After doing VIF check
+
+```{r}
+new_pred <- remove_vif(correlation_free, 5)
+length(new_pred)
+```
+
+
+```{r}
+clean <- correlation_free[, c("target", new_pred)]
+```
+
+
+
+```{r}
+
 dim(clean)
 write.csv2(clean, "processed.csv")
 ```
