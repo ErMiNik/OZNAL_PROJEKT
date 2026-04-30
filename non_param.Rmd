@@ -1,0 +1,1334 @@
+---
+title: "Nonparametric_Models"
+author: "Milan Mikuláš, Marek Vatrt"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# Goal
+
+In this section of our project, our goal is to build 3 non-parametric
+models, analyze the results and compare them with each other. To achieve
+the best results, we will firstly use default settings for creating the
+models and then apply hyperparameter tuning to get the best parameters
+(parameters with which the model has the highest accuracy on testing
+data).
+
+# Loading libraries and data
+
+```{r, warning=FALSE}
+library(tidyverse)
+library(tidymodels)
+
+#vif values
+library(car)
+
+#Decision tree libs
+library(rpart)
+library(rpart.plot)
+library(caret)
+
+#random forest
+library(randomForest)
+
+#k-nn
+library(class)
+
+#metrics lib
+library(Metrics)
+#https://cran.r-project.org/web/packages/Metrics/Metrics.pdf
+
+#clear env variables
+rm(list = ls())
+```
+
+```{r}
+df <- read.csv("processed.csv", sep=";", dec=",")
+#removing the first column (exported indexing)
+df <- df[2:ncol(df)]
+
+#setting the training margin for train/test split
+train_margin=0.8
+
+set.seed(67)
+train_index <- sample(1:nrow(df), train_margin * nrow(df))
+
+train <- df[train_index, ]
+test  <- df[-train_index, ]
+
+#converting to factor, so the models wont think its for regression
+train$target <- as.factor(train$target)
+test$target <- as.factor(test$target)
+```
+
+Helping function for printing out metrics from our models
+
+```{r}
+print_extra_scores <- function(predictions, actual, positive_class = "1") {
+  predictions <- factor(predictions, levels = levels(actual))
+  actual <- factor(actual, levels = levels(actual))
+
+  if (!(positive_class %in% levels(actual))) {
+    positive_class <- levels(actual)[2]
+  }
+  
+  cm <- confusionMatrix(
+    data = predictions,
+    reference = actual,
+    positive = positive_class
+  )
+  
+  cat("\n")
+  cat("Accuracy:", round(cm$overall["Accuracy"] * 100, 2), "%\n")
+  cat("Precision:", round(cm$byClass["Precision"] * 100, 2), "%\n")
+  cat("Recall:", round(cm$byClass["Recall"] * 100, 2), "%\n")
+  cat("Specificity:", round(cm$byClass["Specificity"] * 100, 2), "%\n")
+  cat("\n\n")
+}
+```
+
+#Decision tree First non-parametric model we chose is the decision tree.
+This choice was made because of the tree's simplicity and
+interpretability (although our dataset contains \~55 features, so the
+interpretability might be questionable, depending on how the tree will
+be created). Since decision trees can be used for regression as well as
+classification tasks, we can use it for our task of classifying win/loss
+of a team.
+
+## Statistical assumptions
+
+Statistical assumptions are taken from the 5th module. \### Independence
+This dataset consists of random matches from the game League of Legends.
+Each of the games is independent of eachother, this is because each game
+is new. There are no rematch mechanics. \### Multicolinearity Decision
+trees can handle multicolinearity, however, features with high
+multicollinearity (tested using VIF) were removed from the dataset - as
+per advice we got from a consultation. \### Outliers Robust to outliers.
+At frist, we did not plan on removing outliers due to the tree being
+robust to them, however upon consulting with our supervisor, we have
+decided to remove them in preprocessing. \### Sample size May overfit on
+small datasets (that is what we want to test) \### Normality, Feature
+scaling, Homoscedasticity, Linear relationship Not required.
+
+###Conclusion to statistical assumptions Our dataset satisfies all the
+data assumptions of a decision tree. We can now move on to the
+implementation of the Decision Tree model.
+
+## Implementation
+
+Sources:
+<https://www.rdocumentation.org/packages/rpart/versions/4.1.24/topics/rpart>
+<https://www.rdocumentation.org/packages/rpart.plot/versions/3.1.3/topics/rpart.plot>
+<https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/predict>
+
+For the implementation of the decision tree, we will be using the
+function rpart(). In this section, we will simply use the default
+parameters of rpart. We want to see how the default model compares to
+the hyperparameter-tuned model. Also, since decision trees can use Gini
+impurity and Entropy scores as the splitting criteria, we will also
+compare the accuracy of trees built with Gini and Entropy.
+
+```{r}
+#using lib rpart, we create trees for testing the gini inpurity and entropy
+decision_tree_model_gini <- rpart(
+  target ~ ., 
+  data = train,
+  #method of classfication
+  method = "class",
+  #parms is a list of set parameters, even if we just use 1 parameter, rpart expects a list()
+  parms=list(split="gini"),
+)
+
+decision_tree_model_entropy <- rpart(
+  target ~ ., 
+  data = train,
+  method = "class",
+  parms=list(split="information"),
+)
+
+#plotting the trees we created
+rpart.plot(decision_tree_model_gini,
+           main="Gini Inpurity")
+rpart.plot(decision_tree_model_entropy,
+           main="Entropy")
+
+#using predict() function, we use our test data to make predicitons
+predictions_gini <- predict(decision_tree_model_gini, test, type = "class")
+predictions_entropy <- predict(decision_tree_model_entropy, test, type = "class")
+
+#accuracy scores on test dataset for gini and entropy
+cat("Accuracy on testing dataset (Gini)")
+print_extra_scores(predictions_gini, test$target)
+cat("Accuracy on testing dataset (Entropy)")
+print_extra_scores(predictions_entropy, test$target)
+
+#For final evaluation
+base_dt_accuracy <- mean(predictions_gini == test$target)
+
+#predictions on train data - overfitting check
+predictions_gini <- predict(decision_tree_model_gini, train, type = "class")
+predictions_entropy <- predict(decision_tree_model_entropy, train, type = "class")
+
+#accuracy on training dataset for gini and entropy
+cat("Accuracy on training dataset (Gini)")
+print_extra_scores(predictions_gini, train$target)
+cat("Accuracy on training dataset (Entropy)")
+print_extra_scores(predictions_entropy, train$target)
+
+```
+
+As we can see, the decision tree, without even tuning its
+hyperparameters, got scores of 95% for accuracy. The more accurate out
+of the Gini Inpurity and Entropy methods is the Gini Impurity. For that
+reason, we will be using Gini Impurity scoring for tuning the
+hyperparameters.
+
+Another fact to mention is that the decision tree is not overfitted.
+Actually, for gini impurity, the accuracy score falls behind on the
+training dataset by about 0.3%. On the contrary, Entropy score rises on
+the training dataset. Both of these scores, however, are very similar to
+those of the testing dataset scores. From this we can conclude that the
+decision trees are not overfitted.
+
+Since we have decided on the scoring metric we will be using, we can now
+move on to tuning the decision tree's hyperparameters. The rpart()
+function for creating the decision trees does not have built in
+hyperparameters unfortunately. However, we can use rpart.control() to
+modify the hyperparameters. The creation and training of decision trees
+is not as computanionaly expensive as creating a random forest and
+tuning it's hyperparameters, so for the DT, we have decided to use grid
+search to search for the best hyperparameters.
+
+The probability of finding a better decision tree is quite slim however.
+This is due to the fact that the basic rpart() function has already
+found a tree that has a depth of only 3.
+
+Trying to fit trees to a dataset without the most powerful features. We
+got these features after manually fitting the rpart() function and
+removing features one at a time.
+
+```{r}
+#diff_champion_experience is a dominating feature, which splits and finished the decision tree at depth=2
+#the accuracy is very high even with only 1 feature deciding the outcome, however, for the sake of exploring relationships between features, we have decided to remove it and try again
+exp_cut_train <- train %>%
+  select(-c(diff_champion_experience))
+exp_cut_test <- test %>%
+  select(-c(diff_champion_experience))
+```
+
+```{r}
+decision_tree_model_gini_exp_cut <- rpart(
+  target ~ ., 
+  data = exp_cut_train,
+  method = "class",
+  parms=list(split="gini"),
+)
+
+decision_tree_model_entropy_exp_cut <- rpart(
+  target ~ ., 
+  data = exp_cut_train,
+  method = "class",
+  parms=list(split="information"),
+)
+
+rpart.plot(decision_tree_model_gini_exp_cut,
+           main="Gini Inpurity - cut champ exp")
+rpart.plot(decision_tree_model_entropy_exp_cut,
+           main="Entropy - cut champ exp")
+
+predictions_gini <- predict(decision_tree_model_gini_exp_cut, exp_cut_test, type = "class")
+predictions_entropy <- predict(decision_tree_model_entropy_exp_cut, exp_cut_test, type = "class")
+
+#accuracy scores on test dataset for gini and entropy
+cat("Accuracy on testing dataset (Gini)")
+print_extra_scores(predictions_gini, exp_cut_test$target)
+cat("Accuracy on testing dataset (Entropy)")
+print_extra_scores(predictions_entropy, exp_cut_test$target)
+
+predictions_gini <- predict(decision_tree_model_gini_exp_cut, exp_cut_train, type = "class")
+predictions_entropy <- predict(decision_tree_model_entropy_exp_cut, exp_cut_train, type = "class")
+
+cat("Accuracy on training dataset (Gini)")
+print_extra_scores(predictions_gini, exp_cut_train$target)
+cat("Accuracy on training dataset (Entropy)")
+print_extra_scores(predictions_entropy, exp_cut_train$target)
+```
+
+As we can see, removing the most influential feature from the dataset
+caused the decision tree to lose a lot of accuracy. What we can also
+notice is the fact that the models are starting to overfit more on the
+data. There is a more significant difference between testing and
+training accuracies (\~4% for Gini and \~5.5% for Entropy).
+
+Since the original DT already has an accuracy score of 97% and depth of
+only 2, it is highly unlike that we will find a better DT from
+hyperparameter tuning. Still, it is worth to try all combinations, maybe
+we will find a more suitable tree that will have more features.
+
+## Hyperparameter tuning
+
+```{r}
+
+dt_iterations <- 50
+
+dt_grid <- data.frame(
+  cp = sample(
+    c(0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.02, 0.05, 0.1),
+    dt_iterations,
+    replace = TRUE
+  ),
+  maxdepth = sample(2:30, dt_iterations, replace = TRUE),
+  minsplit = sample(2:60, dt_iterations, replace = TRUE)
+)
+
+dt_grid$minbucket <- sapply(
+  dt_grid$minsplit,
+  function(x) sample(1:max(1, floor(x / 2)), 1)
+)
+
+dt_grid <- unique(dt_grid)
+
+best_xerror <- Inf
+best_params <- NULL
+best_cp_for_pruning <- NULL
+best_dt_model <- NULL
+results <- data.frame()
+
+for (i in 1:nrow(dt_grid)) {
+
+  dt_model <- rpart(
+    target ~ .,
+    data = train,
+    method = "class",
+    parms = list(split = "gini"),
+    control = rpart.control(
+      cp = dt_grid$cp[i],
+      maxdepth = dt_grid$maxdepth[i],
+      minsplit = dt_grid$minsplit[i],
+      minbucket = dt_grid$minbucket[i],
+      xval = 5
+    )
+  )
+
+  model_cptable <- dt_model$cptable
+
+  best_row <- which.min(model_cptable[, "xerror"])
+
+  model_best_xerror <- model_cptable[best_row, "xerror"]
+  model_best_cp <- model_cptable[best_row, "CP"]
+
+  results <- rbind(
+    results,
+    data.frame(
+      cp = dt_grid$cp[i],
+      maxdepth = dt_grid$maxdepth[i],
+      minsplit = dt_grid$minsplit[i],
+      minbucket = dt_grid$minbucket[i],
+      best_pruning_cp = model_best_cp,
+      xerror = model_best_xerror
+    )
+  )
+
+  if (model_best_xerror < best_xerror) {
+    best_xerror <- model_best_xerror
+    best_params <- dt_grid[i, ]
+    best_cp_for_pruning <- model_best_cp
+    best_dt_model <- dt_model
+  }
+}
+
+results <- results[order(results$xerror, decreasing = FALSE), ]
+
+pruned_best_dt_model <- rpart::prune(
+  best_dt_model,
+  cp = best_cp_for_pruning
+)
+
+test_predictions <- predict(
+  pruned_best_dt_model,
+  newdata = test,
+  type = "class"
+)
+
+train_predictions <- predict(
+  pruned_best_dt_model,
+  newdata = train,
+  type = "class"
+)
+
+test_accuracy <- mean(test_predictions == test$target)
+train_accuracy <- mean(train_predictions == train$target)
+
+#for final eval
+tuned_dt_accuracy <- test_accuracy
+
+print(best_params)
+
+cat("Number of random combinations tested:", nrow(dt_grid), "\n")
+cat("Best internal CV xerror:", round(best_xerror, 4), "\n")
+cat("Best original cp:", best_params$cp, "\n")
+cat("Best pruning cp:", best_cp_for_pruning, "\n")
+cat("Best maxdepth:", best_params$maxdepth, "\n")
+cat("Best minsplit:", best_params$minsplit, "\n")
+cat("Best minbucket:", best_params$minbucket, "\n\n")
+cat("Training metrics:")
+print_extra_scores(train_predictions, train$target)
+cat("Testing metrics:")
+print_extra_scores(test_predictions, test$target)
+```
+
+```{r}
+rpart.plot(best_dt_model,
+           main="Gini Inpurity - best hyperparameters model")
+rpart.plot(decision_tree_model_gini,
+           main="Gini Inpurity - default model")
+```
+
+As we have suspected, the best model, even with tweaking the
+hyperparameters, is still the one created using default rpart()
+configuration. The model with tuned hyperparameters achieved better
+performance on the training dataset, however, the accuracy score for the
+testing dataset remains the same.
+
+```{r}
+results %>%
+  group_by(maxdepth) %>%
+  summarise(
+    best_xerror = min(xerror),
+    mean_xerror = mean(xerror),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = maxdepth, y = best_xerror)) +
+  geom_line() +
+  geom_point(size = 2) +
+  labs(
+    title = "Decision Tree Tuning: Best CV Error by Tree Depth",
+    x = "Max Depth",
+    y = "Best CV Error"
+  )
+```
+
+# Random forest
+
+Building upon the tree models, due to the unexpectedly high accuracy
+score of decision tree from both the test and train datasets, we have
+decided to choose random forest to see wether we could increase the
+accuracy further.
+
+## Statistical assumptions
+
+Statistical assumptions are taken from the 5th module. \### Independence
+This dataset consists of random matches from the game League of Legends.
+Each of the games is independent of eachother, this is because each game
+is new. There are no rematch mechanics. \### Multicolinearity Although
+random forest can handle multicolinearity, it is stated that colinearity
+could affect feature importance. Due to this reason, we have decided to
+get rid of features that have too big of multicolinarity between each
+other.
+
+Since we have already cut the features with above 0.8 value on the
+correlation matrix during EDA and preprocessing, this time we will focus
+on the individual VIF values of the features. We will continue to remove
+the feature with the biggest VIF value until the maximum VIF value is
+below 10.
+
+Sources:
+<https://www.rdocumentation.org/packages/regclass/versions/1.6/topics/VIF>
+
+We ended up only removing 2 features, however, the first feature we
+removed had a VIF score of over 4 billion, which is an astronomically
+high multicolinearity score. The second feature was over 100 million.
+From the scores alone, we can asses that it was a good decision to
+remove them from the dataset before creating a random forest model.
+
+### Outliers
+
+Robust to outliers \### Sample size Performs better with a larger
+dataset. Our dataset is not very large (\~1200 rows), however, due to
+the accuracy of the decision tree we tested, we believe that the random
+forest will still perform well. \### Normality, Feature scaling,
+Homoscedasticity, Linear relationship Not required
+
+## Implementation
+
+### No tuning, default
+
+```{r}
+random_forest_model <- randomForest(
+  target ~ .,
+  data = train,
+  replace = TRUE,
+  importance = TRUE
+)
+
+random_forest_model
+
+rf_predictions <- predict(
+  random_forest_model,
+  newdata = test,
+  type = "class"
+)
+
+table(
+  Predicted = rf_predictions,
+  Actual = test$target
+)
+
+rf_accuracy <- mean(rf_predictions == test$target)
+
+cat("Random Forest testing metrics")
+print_extra_scores(rf_predictions, test$target)
+```
+
+As we can see. Just by using the default values (+ setting the
+replacement and importance to TRUE), we got up to 95.34% accuracy. This
+score is outstanding, but we are wondering if we can do even better by
+searching through multiple combinations of hyperparameters to find a
+better result. We have decided to use random search for hyperparameters.
+We could also use grid search, however, finding the best combinations of
+hyperparameters with grid search could become very exhaustive,
+especially with the \~55 features we have. Random search could find a
+better combination of hyperparameters much faster because it does not
+waste time trying every combination that exists.
+
+At first, we tried using the train() function, however, the only
+hyperparameter we are able to tweak is the **mtry** parameter. Mtry is
+important, but this kind of random testing only provided minor
+improvements (around 0.5% accuracy). We are wondering if it is possible
+to go beyond that. In this instance, we will not be using a built-in
+function, instead we will try to do our own version of a randomized
+search, where we try to tweak all the numeric parameters of the random
+forest - mtree, mtry, nodesize, maxnodes using the randomForest library
+and cross validation.
+
+## Hyperparameter tuning
+
+```{r}
+tune_random_forest <- function(
+  train,
+  test,
+  target_col = "target",
+  seed = 67,
+  rf_iterations = 50
+) {
+
+  set.seed(seed)
+
+  predictor_count <- ncol(train) - 1
+
+  random_grid <- data.frame(
+    mtry = sample(1:predictor_count, rf_iterations, replace = TRUE),
+    ntree = sample(seq(100, 1000, by = 50), rf_iterations, replace = TRUE),
+    nodesize = sample(20:100, rf_iterations, replace = TRUE),
+    maxnodes = sample(seq(10, 60, by = 2), rf_iterations, replace = TRUE)
+  )
+
+  random_grid <- unique(random_grid)
+
+  best_oob_accuracy <- 0
+  best_params <- NULL
+  results <- data.frame()
+
+  for (i in 1:nrow(random_grid)) {
+
+    rf_model <- randomForest(
+      as.formula(paste(target_col, "~ .")),
+      data = train,
+      mtry = random_grid$mtry[i],
+      ntree = random_grid$ntree[i],
+      nodesize = random_grid$nodesize[i],
+      maxnodes = random_grid$maxnodes[i],
+      replace = TRUE,
+      importance = TRUE
+    )
+
+    final_oob_error <- rf_model$err.rate[rf_model$ntree, "OOB"]
+    oob_accuracy <- 1 - final_oob_error
+
+    results <- rbind(
+      results,
+      data.frame(
+        mtry = random_grid$mtry[i],
+        ntree = random_grid$ntree[i],
+        nodesize = random_grid$nodesize[i],
+        maxnodes = random_grid$maxnodes[i],
+        oob_accuracy = oob_accuracy,
+        oob_error = final_oob_error
+      )
+    )
+
+    if (oob_accuracy > best_oob_accuracy) {
+      best_oob_accuracy <- oob_accuracy
+      best_params <- random_grid[i, ]
+    }
+  }
+
+  results <- results[order(results$oob_accuracy, decreasing = TRUE), ]
+
+  set.seed(seed)
+
+  final_model <- randomForest(
+    as.formula(paste(target_col, "~ .")),
+    data = train,
+    mtry = best_params$mtry,
+    ntree = best_params$ntree,
+    nodesize = best_params$nodesize,
+    maxnodes = best_params$maxnodes,
+    replace = TRUE,
+    importance = TRUE
+  )
+
+  train_predictions <- predict(final_model, newdata = train)
+  test_predictions <- predict(final_model, newdata = test)
+
+  train_accuracy <- mean(train_predictions == train[[target_col]])
+  test_accuracy <- mean(test_predictions == test[[target_col]])
+
+  final_oob_error <- final_model$err.rate[final_model$ntree, "OOB"]
+  final_oob_accuracy <- 1 - final_oob_error
+
+  cat("Best tuning OOB accuracy:", round(best_oob_accuracy * 100, 2), "%\n")
+  cat("Final model OOB accuracy:", round(final_oob_accuracy * 100, 2), "%\n\n")
+  cat("Training metrics:")
+  print_extra_scores(train_predictions, train[[target_col]])
+  cat("Testing metrics:")
+  print_extra_scores(test_predictions, test[[target_col]])
+  cat("Train-test gap:", round((train_accuracy - test_accuracy) * 100, 2), "%\n")
+  cat("Best mtry:", best_params$mtry, "\n")
+  cat("Best ntree:", best_params$ntree, "\n")
+  cat("Best nodesize:", best_params$nodesize, "\n")
+  cat("Best maxnodes:", best_params$maxnodes, "\n")
+
+  return(list(
+    final_model = final_model,
+    best_params = best_params,
+    best_tuning_oob_accuracy = best_oob_accuracy,
+    final_oob_accuracy = final_oob_accuracy,
+    train_accuracy = train_accuracy,
+    test_accuracy = test_accuracy,
+    results = results
+  ))
+}
+```
+
+The best outcome we got from this hyperparameter tuning after we tried
+changing all the randomised ranges of the hyperparameters was 96.99%.
+That is an upgrade of 1.1% compared to the train() function. What we
+have not done yet is checking for overfitting. We will now test the best
+model on both the train dataset and the test dataset and compare their
+accuracy.
+
+```{r}
+rf_tuned <- tune_random_forest(train, test)
+```
+
+```{r}
+plot_rf_param <- function(parameter) {
+  ggplot(rf_tuned$results, aes(x = .data[[parameter]], y = oob_accuracy)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(se = FALSE) +
+    labs(
+      title = paste("Random Forest Tuning:", parameter, "vs OOB Accuracy"),
+      x = parameter,
+      y = "OOB Accuracy"
+    ) +
+    scale_y_continuous(labels = scales::percent)
+}
+
+```
+
+```{r}
+plot_rf_param("mtry")
+plot_rf_param("ntree")
+plot_rf_param("nodesize")
+plot_rf_param("maxnodes")
+```
+
+## Hyperparameter tuning conclusion
+
+The most succesful model came from our own implementation of random
+search with an accuracy of 96.99%. Even though it might not seem like a
+substanstial difference, the "baseline" for this model was already very
+high at 95.34%.
+
+### Feature importance
+
+Now that we have found the best model via hyperparameter tuning, we will
+look into what are the most important, or valuable features for
+splitting the trees.
+
+Sources:
+<https://www.rdocumentation.org/packages/randomForest/versions/4.7-1.2/topics/varImpPlot>
+
+```{r, fig.width=16, fig.height=8}
+varImpPlot(
+  rf_tuned$final_model,
+  n.var = 10,
+  main = "Hyperparameter-tuned RF Feature Importance"
+)
+```
+
+As we can see, the same feature that dominated the decision tree
+dominated again in the random forest.
+
+diff_inhibitor_takedowns, without being a data leakage, is the most
+significant and influential variable for predicting the outcome of the
+match. It has the highest MeanDecreaseAccuracy, meaning that randomly
+permuting this feature causes the largest drop in classification
+accuracy. It also has the highest MeanDecreseGini, which means that it
+contributes the most to the reduction of gini impurity at a split.
+
+We debated wether to remove it, simply because it carries a lot of
+influencer over the outcome. However, as the decision tree has proved,
+even if we were to remove it, other features can still classify the
+outcome of the matches with a great accuracy. In the end, we have
+decided to keep it, because it is a part of the dataset and it is not
+considered a data leakage.
+
+#k-NN As the final non-parametric model we have chosen k-NN. At first we
+wanted to use XGBoost, because we thought that the decision tree and
+random forest would not be as powerful, so we wanted to use boosting to
+combine the "weaker" trees into a better one. However, the accuracy of
+the tree models turned out to be excellent, that is why we decided to
+move on from tree algorithms.
+
+k-NN is simple, and unlike tree algorithms, that split the feature space
+based on conditions, k-NN uses the similarity of data to make decisions.
+We wanted to choose it due to the use of a different technique. However,
+k-NN has a defining problem, sometimes called the "curse of
+dimensionality". What this means is that if a dataset contains too many
+features, the distances between individual features can become similar,
+which can cause the model to predict unreliably. This is a big problem
+for our dataset, which contains \~55 features.
+
+To counter this problem, we are planning on implementing a simple
+feature selection, to select the best 5-15 features. We plan to do this
+using the most random forest's feature importance. Using the top 15
+features, we will then observe how the accuracy of k-NN
+increases/decreases when we try using 14,13,12,..,5 features.
+
+What we found from using the tree models is the fact that our dataset
+contains a small set of features, which carry the most influence over
+the outcome of the prediction. We want to see exactly how much the
+number of features changes the accuracy and if a different algorithm can
+bring even more accuracy to our predictions.
+
+## Statistical assumptions
+
+Sources for statistical assumptions of k-NN: \n
+<https://medium.com/analytics-vidhya/k-nearest-neighbors-algorithm-7952234c69a4>
+\n
+
+### Independence
+
+This dataset consists of random matches from the game League of Legends.
+Each of the games is independent of eachother, this is because each game
+is new. There are no rematch mechanics. \### Multicollinearity
+Multicollinearity can affect k-NN performance, we can try eliminating
+the features with high multicollinearity, just like we did in RF. \###
+Outliers Sensitive to outliers. \### Sample size Computationally
+expensive on large datasets, could overfit on small dataset. \###
+Normality, Homoscedasticity, Linear relationship Not required \###
+Feature scaling Due to k-NN being a distance-based method of
+classification, feature scaling is required.
+
+```{r}
+#k-nn
+library(class)
+library(kknn)
+```
+
+##Implementation Base model with default hyperparameters
+
+```{r}
+library(kknn)
+model <- kknn(
+          target ~ .,
+          train,
+          test
+        )
+
+pred <- predict(model)
+cat("Base k-NN metrics: ")
+print_extra_scores(pred, test$target)
+```
+
+##Hyperparameter tuning The hyperparameters we will be tuning to find
+the best k-NN model is the k value, meaning the number of neighbours
+needed for classifying a point, distance, and kernel. We can choose
+distances 1,2,3 - Manhattan, Euclidian and Minkowski. There are 10
+kernels available for kknn, we chose to try all of them. The final
+number of combinations adds up to 1500.
+
+We will iterate through all the combinations - grid search, since there
+is "only" 1500 combinations, doing this will not be as computationaly
+expensive as random forest, for which we opted to use random search.
+
+### Hyperparameter search
+
+```{r}
+train_copy <- train
+test_copy <- test
+```
+
+```{r}
+tune_knn <- function(
+  train,
+  test,
+  target_col = "target",
+  seed = 67,
+  knn_iterations = 50,
+  #when we lowered the k-values, the model found good solutions, but trainig set accuracy score was 100% - overfit
+  k_values = 1:50,
+  distance_metrics = 1:3,
+  kernels = c(
+    "rectangular",
+    "triangular",
+    "epanechnikov",
+    "biweight",
+    "triweight",
+    "cos",
+    "inv",
+    "gaussian",
+    "rank",
+    "optimal"),
+  k_folds = 5
+) {
+
+  set.seed(seed)
+
+  random_grid <- data.frame(
+    k = sample(k_values, knn_iterations, replace = TRUE),
+    distance = sample(distance_metrics, knn_iterations, replace = TRUE),
+    kernel = sample(kernels, knn_iterations, replace = TRUE)
+  )
+
+  #keeping only the unique random combinations=no duplicates
+  random_grid <- unique(random_grid)
+
+  folds <- createFolds(
+    train[[target_col]],
+    k = k_folds,
+    list = TRUE,
+    returnTrain = FALSE
+  )
+
+  best_k <- NULL
+  best_distance <- NULL
+  best_kernel <- NULL
+  best_cv_accuracy <- 0
+  results <- data.frame()
+
+  for (i in 1:nrow(random_grid)) {
+
+    fold_accuracies <- numeric(k_folds)
+
+    for (fold_id in 1:k_folds) {
+
+      validation_index <- folds[[fold_id]]
+
+      cv_train_data <- train[-validation_index, ]
+      cv_validation_data <- train[validation_index, ]
+
+      cv_train_data[[target_col]] <- as.factor(cv_train_data[[target_col]])
+      cv_validation_data[[target_col]] <- as.factor(cv_validation_data[[target_col]])
+
+      model <- kknn(
+        target ~ .,
+        train = cv_train_data,
+        test = cv_validation_data,
+        k = random_grid$k[i],
+        distance = random_grid$distance[i],
+        kernel = random_grid$kernel[i],
+        #when we did not use scaling, the accuracy was the same for all combinations
+        scale = TRUE
+      )
+
+      predictions <- predict(model)
+
+      fold_accuracies[fold_id] <- mean(
+        predictions == cv_validation_data[[target_col]]
+      )
+    }
+
+    cv_accuracy <- mean(fold_accuracies)
+
+    results <- rbind(
+      results,
+      data.frame(
+        k = random_grid$k[i],
+        kernel = random_grid$kernel[i],
+        distance = random_grid$distance[i],
+        cv_accuracy = cv_accuracy
+      )
+    )
+
+    if (cv_accuracy > best_cv_accuracy) {
+      best_cv_accuracy <- cv_accuracy
+      best_k <- random_grid$k[i]
+      best_distance <- random_grid$distance[i]
+      best_kernel <- random_grid$kernel[i]
+    }
+  }
+
+  results <- results[order(results$cv_accuracy, decreasing = TRUE), ]
+
+  best_model <- kknn(
+    as.formula(paste(target_col, "~ .")),
+    train = train,
+    test = test,
+    k = best_k,
+    distance = best_distance,
+    kernel = best_kernel,
+    scale = TRUE
+  )
+
+  test_predictions <- predict(best_model)
+  test_accuracy <- mean(test_predictions == test[[target_col]])
+
+  generalization_gap <- best_cv_accuracy - test_accuracy
+
+  cat("Number of random combinations tested:", nrow(random_grid), "\n")
+  cat("Best CV accuracy:", round(best_cv_accuracy * 100, 2), "%\n")
+  cat("Testing metrics:")
+  print_extra_scores(test_predictions, test[[target_col]])
+  cat("CV-test gap:", round(generalization_gap * 100, 2), "%\n")
+  cat("Best k:", best_k, "\n")
+  cat("Best distance metric:", best_distance, "\n")
+  cat("Best kernel:", best_kernel, "\n")
+
+  return(list(
+    best_model = best_model,
+    best_k = best_k,
+    best_distance = best_distance,
+    best_kernel = best_kernel,
+    best_cv_accuracy = best_cv_accuracy,
+    test_accuracy = test_accuracy,
+    generalization_gap = generalization_gap,
+    results = results,
+    random_grid = random_grid,
+    train = train,
+    test = test
+  ))
+}
+```
+
+```{r}
+knn_tuned_all_features <- tune_knn(train_copy,test_copy)
+```
+
+```{r}
+ggplot(knn_tuned_all_features$results, aes(x = k, y = cv_accuracy)) +
+  geom_point(alpha = 0.6) +
+  geom_line() +
+  labs(
+    title = "k-NN Tuning: Number of Neighbors vs CV Accuracy",
+    x = "k",
+    y = "Cross-validation Accuracy"
+  ) +
+  scale_y_continuous(labels = scales::percent)
+
+ggplot(knn_tuned_all_features$results, aes(x = kernel, y = cv_accuracy, group = 1)) +
+  geom_point(alpha = 0.6) +
+  geom_line() +
+  labs(
+    title = "k-NN Tuning: Kernel Comparison",
+    x = "Kernel",
+    y = "CV Accuracy"
+  ) +
+  scale_y_continuous(labels = scales::percent)
+```
+
+We also tried to use train() and trainControl() to control the cross
+validation and training of the models. Due to the different creation of
+folds for the training and validation of the models, the outcomes
+slightly differed. We achieved similar results in terms of accuracy,
+however, the training time of all the models took 5x longer using the
+train() function (2 hours), so we have decided to choose our
+implementation.
+
+## PCA
+
+Since our dataset contains \~55 features, we have decided to try using a
+dimensionality reduction method to lower the number of features. For
+this, we have chosen PCA.
+
+```{r}
+tune_knn_pca <- function(
+  train,
+  test,
+  target_col = "target",
+  seed = 67,
+  pca_iterations = 50,
+  pca_thresholds = seq(0.39, 0.99, by = 0.05),
+  k_values = 10:50,
+  distance_metrics = 1:3,
+  kernels = c(
+    "rectangular",
+    "triangular",
+    "epanechnikov",
+    "biweight",
+    "triweight",
+    "cos",
+    "inv",
+    "gaussian",
+    "rank",
+    "optimal"
+  ),
+  k_folds = 5
+) {
+
+  set.seed(seed)
+
+  x_train <- train[, names(train) != target_col]
+  y_train <- train[[target_col]]
+
+  x_test <- test[, names(test) != target_col]
+  y_test <- test[[target_col]]
+
+  random_grid <- data.frame(
+    pca_threshold = sample(pca_thresholds, pca_iterations, replace = TRUE),
+    k = sample(k_values, pca_iterations, replace = TRUE),
+    distance = sample(distance_metrics, pca_iterations, replace = TRUE),
+    kernel = sample(kernels, pca_iterations, replace = TRUE)
+  )
+
+  random_grid <- unique(random_grid)
+
+  folds <- createFolds(
+    y_train,
+    k = k_folds,
+    list = TRUE,
+    returnTrain = FALSE
+  )
+
+  best_cv_accuracy <- 0
+  best_params <- NULL
+  results <- data.frame()
+
+  for (i in 1:nrow(random_grid)) {
+
+    fold_accuracies <- numeric(k_folds)
+    fold_components <- numeric(k_folds)
+
+    for (fold_id in 1:k_folds) {
+
+      validation_index <- folds[[fold_id]]
+
+      cv_x_train <- x_train[-validation_index, ]
+      cv_y_train <- y_train[-validation_index]
+
+      cv_x_validation <- x_train[validation_index, ]
+      cv_y_validation <- y_train[validation_index]
+
+      pca_model <- preProcess(
+        cv_x_train,
+        method = c("center", "scale", "pca"),
+        thresh = random_grid$pca_threshold[i]
+      )
+
+      cv_x_train_pca <- predict(pca_model, cv_x_train)
+      cv_x_validation_pca <- predict(pca_model, cv_x_validation)
+
+      fold_components[fold_id] <- ncol(cv_x_train_pca)
+
+      cv_train_pca <- data.frame(cv_x_train_pca)
+      cv_validation_pca <- data.frame(cv_x_validation_pca)
+
+      cv_train_pca[[target_col]] <- cv_y_train
+      cv_validation_pca[[target_col]] <- cv_y_validation
+
+      model <- kknn(
+        as.formula(paste(target_col, "~ .")),
+        train = cv_train_pca,
+        test = cv_validation_pca,
+        k = random_grid$k[i],
+        distance = random_grid$distance[i],
+        kernel = random_grid$kernel[i]
+      )
+
+      predictions <- predict(model)
+
+      fold_accuracies[fold_id] <- mean(
+        predictions == cv_validation_pca[[target_col]]
+      )
+    }
+
+    cv_accuracy <- mean(fold_accuracies)
+    mean_components <- mean(fold_components)
+
+    results <- rbind(
+      results,
+      data.frame(
+        pca_threshold = random_grid$pca_threshold[i],
+        k = random_grid$k[i],
+        distance = random_grid$distance[i],
+        kernel = random_grid$kernel[i],
+        cv_accuracy = cv_accuracy,
+        mean_components = mean_components
+      )
+    )
+
+    if (cv_accuracy > best_cv_accuracy) {
+      best_cv_accuracy <- cv_accuracy
+      best_params <- random_grid[i, ]
+    }
+  }
+
+  results <- results[order(results$cv_accuracy, decreasing = TRUE), ]
+
+  final_pca_model <- preProcess(
+    x_train,
+    method = c("center", "scale", "pca"),
+    thresh = best_params$pca_threshold
+  )
+
+  x_train_pca <- predict(final_pca_model, x_train)
+  x_test_pca <- predict(final_pca_model, x_test)
+
+  knn_train_pca <- data.frame(x_train_pca)
+  knn_test_pca <- data.frame(x_test_pca)
+
+  knn_train_pca[[target_col]] <- y_train
+  knn_test_pca[[target_col]] <- y_test
+
+  final_model <- kknn(
+    as.formula(paste(target_col, "~ .")),
+    train = knn_train_pca,
+    test = knn_test_pca,
+    k = best_params$k,
+    distance = best_params$distance,
+    kernel = best_params$kernel
+  )
+
+  test_predictions <- predict(final_model)
+  test_accuracy <- mean(test_predictions == knn_test_pca[[target_col]])
+
+  final_components <- ncol(x_train_pca)
+
+  generalization_gap <- best_cv_accuracy - test_accuracy
+
+  cat("Number of random combinations tested:", nrow(random_grid), "\n")
+  cat("Best CV accuracy:", round(best_cv_accuracy * 100, 2), "%\n")
+  cat("Testing metrics:")
+  print_extra_scores(test_predictions, knn_test_pca[[target_col]])
+  cat("CV-test gap:", round(generalization_gap * 100, 2), "%\n")
+  cat("Best PCA threshold:", best_params$pca_threshold, "\n")
+  cat("Number of PCA components:", final_components, "\n")
+  cat("Best k:", best_params$k, "\n")
+  cat("Best distance:", best_params$distance, "\n")
+  cat("Best kernel:", best_params$kernel, "\n")
+
+  return(list(
+    final_model = final_model,
+    final_pca_model = final_pca_model,
+    best_params = best_params,
+    best_cv_accuracy = best_cv_accuracy,
+    test_accuracy = test_accuracy,
+    generalization_gap = generalization_gap,
+    final_components = final_components,
+    results = results,
+    random_grid = random_grid,
+    train_pca = knn_train_pca,
+    test_pca = knn_test_pca
+  ))
+}
+```
+
+```{r}
+knn_pca_tuned <- tune_knn_pca(
+  train = train,
+  test = test,
+  pca_iterations = 50
+)
+```
+
+```{r}
+# pca_results_summary <- knn_pca_tuned$results %>%
+#   group_by(pca_threshold) %>%
+#   summarise(
+#     mean_accuracy = mean(cv_accuracy, na.rm = TRUE),
+#     best_accuracy = max(cv_accuracy, na.rm = TRUE),
+#     sd_accuracy = sd(cv_accuracy, na.rm = TRUE),
+#     mean_components = mean(mean_components, na.rm = TRUE),
+#     .groups = "drop"
+#   )
+# 
+# ggplot(pca_results_summary, aes(x = pca_threshold, y = mean_accuracy)) +
+#   geom_line(linewidth = 1) +
+#   geom_point(size = 2) +
+#   labs(
+#     title = "PCA k-NN: PCA Threshold vs Mean CV Accuracy",
+#     x = "PCA explained variance threshold",
+#     y = "Mean CV Accuracy"
+#   ) +
+#   scale_y_continuous(labels = scales::percent)
+```
+
+```{r}
+pca_components_summary <- knn_pca_tuned$results %>%
+  group_by(mean_components) %>%
+  summarise(
+    mean_accuracy = mean(cv_accuracy, na.rm = TRUE),
+    best_accuracy = max(cv_accuracy, na.rm = TRUE),
+    sd_accuracy = sd(cv_accuracy, na.rm = TRUE),
+    tested_combinations = n(),
+    .groups = "drop"
+  )
+
+ggplot(pca_components_summary, aes(x = mean_components, y = mean_accuracy)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  geom_errorbar(
+    aes(
+      ymin = mean_accuracy - sd_accuracy,
+      ymax = mean_accuracy + sd_accuracy
+    ),
+    width = 0.3,
+    alpha = 0.5
+  ) +
+  labs(
+    title = "PCA k-NN: Number of PCA Components vs Mean CV Accuracy",
+    x = "Mean number of PCA components",
+    y = "Mean CV Accuracy"
+  ) +
+  scale_y_continuous(labels = scales::percent) +
+  theme_minimal()
+
+```
+
+# Final Evalutation
+
+```{r}
+library(pROC)
+
+get_positive_prob <- function(prob_object, positive_class = "1") {
+  prob_df <- as.data.frame(prob_object)
+  
+  if (positive_class %in% colnames(prob_df)) {
+    return(prob_df[[positive_class]])
+  }
+  
+  return(prob_df[[ncol(prob_df)]])
+}
+
+dt_prob <- predict(
+  pruned_best_dt_model,
+  newdata = test,
+  type = "prob"
+)[, "1"]
+
+rf_prob <- predict(
+  rf_tuned$final_model,
+  newdata = test,
+  type = "prob"
+)[, "1"]
+
+knn_prob <- get_positive_prob(
+  predict(knn_tuned_all_features$best_model, type = "prob"),
+  positive_class = "1"
+)
+
+knn_pca_prob <- get_positive_prob(
+  predict(knn_pca_tuned$final_model, type = "prob"),
+  positive_class = "1"
+)
+
+roc_dt <- pROC::roc(test$target, dt_prob, levels = c("0", "1"), direction = "<")
+roc_rf <- pROC::roc(test$target, rf_prob, levels = c("0", "1"), direction = "<")
+roc_knn <- pROC::roc(test$target, knn_prob, levels = c("0", "1"), direction = "<")
+roc_knn_pca <- pROC::roc(
+  knn_pca_tuned$test_pca$target,
+  knn_pca_prob,
+  levels = c("0", "1"),
+  direction = "<"
+)
+
+roc_data <- bind_rows(
+  data.frame(
+    fpr = 1 - roc_dt$specificities,
+    tpr = roc_dt$sensitivities,
+    model = paste0("Decision Tree tuned, AUC = ", round(as.numeric(pROC::auc(roc_dt)), 3))
+  ),
+  data.frame(
+    fpr = 1 - roc_rf$specificities,
+    tpr = roc_rf$sensitivities,
+    model = paste0("Random Forest tuned, AUC = ", round(as.numeric(pROC::auc(roc_rf)), 3))
+  ),
+  data.frame(
+    fpr = 1 - roc_knn$specificities,
+    tpr = roc_knn$sensitivities,
+    model = paste0("k-NN tuned, AUC = ", round(as.numeric(pROC::auc(roc_knn)), 3))
+  ),
+  data.frame(
+    fpr = 1 - roc_knn_pca$specificities,
+    tpr = roc_knn_pca$sensitivities,
+    model = paste0("k-NN PCA tuned, AUC = ", round(as.numeric(pROC::auc(roc_knn_pca)), 3))
+  )
+)
+
+ggplot(roc_data, aes(x = fpr, y = tpr, color = model)) +
+  geom_line(linewidth = 1.1) +
+  geom_abline(
+    intercept = 0,
+    slope = 1,
+    linetype = "dashed",
+    color = "gray40"
+  ) +
+  coord_equal() +
+  labs(
+    title = "ROC Curve Comparison of Tuned Models",
+    subtitle = "Curves closer to the top-left corner indicate better classification performance",
+    x = "False Positive Rate",
+    y = "True Positive Rate / Recall",
+    color = "Model"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom"
+  )
+
+cat("AUC - Decision Tree tuned:", round(as.numeric(pROC::auc(roc_dt)), 4), "\n")
+cat("AUC - Random Forest tuned:", round(as.numeric(pROC::auc(roc_rf)), 4), "\n")
+cat("AUC - k-NN tuned:", round(as.numeric(pROC::auc(roc_knn)), 4), "\n")
+cat("AUC - k-NN PCA tuned:", round(as.numeric(pROC::auc(roc_knn_pca)), 4), "\n")
+```
+
+```{r}
+model_results <- data.frame(
+  model = c(
+    "Decision Tree default",
+    "Decision Tree tuned",
+    "Random Forest default",
+    "Random Forest tuned",
+    "k-NN base model",
+    "k-NN all features tuned",
+    "k-NN PCA tuned"
+  ),
+  test_accuracy = as.numeric(c(
+    base_dt_accuracy,
+    tuned_dt_accuracy,
+    rf_accuracy,
+    rf_tuned$test_accuracy,
+    base_knn_accuracy,
+    knn_tuned_all_features$test_accuracy,
+    knn_pca_tuned$test_accuracy
+  ))
+)
+
+ggplot(model_results, aes(x = reorder(model, test_accuracy), y = test_accuracy)) +
+  geom_col() +
+  coord_flip(ylim = c(0.80, 1.00)) +
+  labs(
+    title = "Comparison of Final Model Test Accuracies",
+    x = "Model",
+    y = "Test Accuracy"
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 1),
+    breaks = seq(0.80, 1.00, by = 0.05)
+  )
+```

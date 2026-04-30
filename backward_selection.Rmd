@@ -1,0 +1,27 @@
+```{r}
+
+```
+
+
+```{r}
+predictors <- c("diff_assists",
+                "diff_triple_kills",
+                "diff_largest_multi_kill",
+                "diff_killing_sprees",
+                "diff_total_damage_dealt",
+                "diff_total_damage_taken",
+                "diff_physical_damage_dealt",
+                "diff_true_damage_dealt",
+                "diff_gold_spent",
+                "diff_total_enemy_jungle_minions_killed",
+                "diff_dragon_kills",
+                "diff_baron_kills",
+                "diff_inhibitor_takedowns",
+                "diff_total_heal",
+                "diff_solo_kills",
+                "diff_outnumbered_kills"
+)
+
+train_data_lr <- train_data[, c("target", predictors)]
+test_data_lr <- test_data[, c("target", predictors)]
+```

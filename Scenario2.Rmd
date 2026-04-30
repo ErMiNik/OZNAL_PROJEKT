@@ -1,5 +1,14 @@
+---
+title: "Parametric_Models"
+author: "Milan Mikuláš, Marek Vatrt"
+date: "`r Sys.Date()`"
+output: html_document
+---
 
-Loading the libraries
+# Goal
+In this section of our project, our goal is to build 3 non-parametric models, analyze the results and compare them with each other. To achieve the best results, we will firstly use default settings for creating the models and then apply hyperparameter tuning to get the best parameters (parameters with which the model has the highest accuracy on testing data).
+
+# Loading libraries and data
 ```{r}
 library(tidyverse)
 library(tidymodels)
@@ -27,11 +36,12 @@ rm(list = ls())
 ```
 
 
-Loading the preprocessed dataset
 ```{r}
 df <- read.csv("processed.csv", sep=";", dec=",")
 #removing the first column (exported indexing)
 df <- df[2:ncol(df)]
+df <- df %>%
+  select(-early_advantage)
 ```
 
 
@@ -60,15 +70,12 @@ Setting up variables
 train_margin=0.7
 ```
 
-
-
 Preparing the data
 ```{r}
-
 #after running the model multiple times, we have decided that, for the decision trees, diff_inhibitor_takedowns and diff_baron_kills are very strong variables that made the trees stop almost instantly (depth=3)
 #for the sake of exploring more relationships between features, we have decided to remove them and try again
-df_dt <- df %>%
-  select(-c(diff_inhibitor_takedowns, diff_baron_kills))
+df_dt <- df #%>%
+  #select(-c(diff_inhibitor_takedowns, diff_baron_kills))
 
 set.seed(69)
 train_index <- sample(1:nrow(df_dt), train_margin * nrow(df_dt))
@@ -77,13 +84,12 @@ train_data <- df_dt[train_index, ]
 test_data  <- df_dt[-train_index, ]
 ```
 
-##Original DT
-Building, visualizing and testing
-
 Sources:
 https://www.rdocumentation.org/packages/rpart/versions/4.1.24/topics/rpart
 https://www.rdocumentation.org/packages/rpart.plot/versions/3.1.3/topics/rpart.plot
 https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/predict
+
+For the implementation of the decision tree, we will be using the function rpart(). In this section, we will simply use the default parameters of rpart. We want to see how the default model compares to the hyperparameter-tuned model. Also, since decision trees can use Gini impurity and Entropy scores as the splitting criteria, we will also compare the accuracy of trees built with Gini and Entropy.
 
 ```{r}
 #using lib rpart, we create trees for testing the gini inpurity and entropy
@@ -114,10 +120,11 @@ predictions_gini <- predict(decision_tree_model_gini, test_data, type = "class")
 predictions_entropy <- predict(decision_tree_model_entropy, test_data, type = "class")
 
 #accuracy scores on test dataset for gini and entropy
-cat("Accuracy on training dataset (Gini)",round(mean(predictions_gini == test_data$target) * 100, 2),"%\n")
-cat("Accuracy on training dataset (Entropy)",round(mean(predictions_entropy == test_data$target) * 100, 2),"%")
+cat("Accuracy on testing dataset (Gini)",round(mean(predictions_gini == test_data$target) * 100, 2),"%\n")
+cat("Accuracy on testing dataset (Entropy)",round(mean(predictions_entropy == test_data$target) * 100, 2),"%")
 
 ```
+
 ```{r}
 
 #predictions on train data - overfitting check
@@ -128,13 +135,141 @@ predictions_entropy <- predict(decision_tree_model_entropy, train_data, type = "
 cat("Accuracy on training dataset (Gini)",round(mean(predictions_gini == train_data$target) * 100, 2),"%\n")
 cat("Accuracy on training dataset (Entropy)",round(mean(predictions_entropy == train_data$target) * 100, 2),"%")
 ```
-As we can see, the decision tree, without even tuning its hyperparameters, got scores of 95% for accuracy. The more accurate out of the Gini Inpurity and Entropy methods is the Gini Impurity. For that reason, we will be using Gini Impurity scoring when we will be tuning the hyperparameters. 
+As we can see, the decision tree, without even tuning its hyperparameters, got scores of 95% for accuracy. The more accurate out of the Gini Inpurity and Entropy methods is the Gini Impurity. For that reason, we will be using Gini Impurity scoring for tuning the hyperparameters. 
 
 Another fact to mention is that the decision tree is not overfitted. Actually, for gini impurity, the accuracy score falls behind on the training dataset by about 0.3%. On the contrary, Entropy score rises on the training dataset. Both of these scores, however, are very similar to those of the testing dataset scores. From this we can conclude that the decision trees are not overfitted.
 
 Since we have decided on the scoring metric we will be using, we can now move on to tuning the decision tree's hyperparameters. The rpart() function for creating the decision trees does not have built in hyperparameters unfortunately. However, we can use rpart.control() to modify the hyperparameters. The creation and training of decision trees is not as computanionaly expensive as creating a random forest and tuning it's hyperparameters, so for the DT, we have decided to use grid search to search for the best hyperparameters.
 
+The probability of finding a better decision tree is quite slim however. This is due to the fact that the basic rpart() function has already found a tree that has a depth of only 3.
+
 ## Hyperparameter tuning
+```{r}
+set.seed(69)
+
+train_data$target <- as.factor(train_data$target)
+test_data$target <- as.factor(test_data$target)
+
+k_folds <- 5
+
+folds <- createFolds(
+  train_data$target,
+  k = k_folds,
+  list = TRUE,
+  returnTrain = FALSE
+)
+
+dt_grid <- expand.grid(
+  cp = c(0.0001, 0.001, 0.005, 0.01, 0.02, 0.05),
+  maxdepth = c(3, 5, 7, 10, 15, 20, 30),
+  minsplit = c(5, 10, 20, 30, 40),
+  minbucket = c(2, 5, 10, 15)
+)
+
+best_accuracy <- 0
+best_params <- NULL
+results <- data.frame()
+
+for (i in 1:nrow(dt_grid)) {
+  
+  fold_accuracies <- numeric(k_folds)
+  
+  for (fold_id in 1:k_folds) {
+    
+    validation_index <- folds[[fold_id]]
+    
+    cv_train_data <- train_data[-validation_index, ]
+    cv_validation_data <- train_data[validation_index, ]
+    
+    dt_model <- rpart(
+      target ~ .,
+      data = cv_train_data,
+      method = "class",
+      parms = list(split = "gini"),
+      control = rpart.control(
+        cp = dt_grid$cp[i],
+        maxdepth = dt_grid$maxdepth[i],
+        minsplit = dt_grid$minsplit[i],
+        minbucket = dt_grid$minbucket[i]
+      )
+    )
+    
+    predictions <- predict(
+      dt_model,
+      newdata = cv_validation_data,
+      type = "class"
+    )
+    
+    fold_accuracies[fold_id] <- mean(predictions == cv_validation_data$target)
+  }
+  
+  mean_cv_accuracy <- mean(fold_accuracies)
+  
+  results <- rbind(
+    results,
+    data.frame(
+      cp = dt_grid$cp[i],
+      maxdepth = dt_grid$maxdepth[i],
+      minsplit = dt_grid$minsplit[i],
+      minbucket = dt_grid$minbucket[i],
+      cv_accuracy = mean_cv_accuracy
+    )
+  )
+  
+  if (mean_cv_accuracy > best_accuracy) {
+    best_accuracy <- mean_cv_accuracy
+    best_params <- dt_grid[i, ]
+  }
+}
+
+results <- results[order(results$cv_accuracy, decreasing = TRUE), ]
+
+best_dt_model <- rpart(
+  target ~ .,
+  data = train_data,
+  method = "class",
+  parms = list(split = "gini"),
+  control = rpart.control(
+    cp = best_params$cp,
+    maxdepth = best_params$maxdepth,
+    minsplit = best_params$minsplit,
+    minbucket = best_params$minbucket
+  )
+)
+
+test_predictions <- predict(
+  best_dt_model,
+  newdata = test_data,
+  type = "class"
+)
+
+train_predictions <- predict(
+  best_dt_model,
+  newdata = train_data,
+  type = "class"
+)
+
+test_accuracy <- mean(test_predictions == test_data$target)
+train_accuracy <- mean(train_predictions == train_data$target)
+
+print(results)
+print(best_params)
+
+cat("Best CV accuracy:", round(best_accuracy * 100, 2), "%\n")
+cat("Best cp:", best_params$cp, "\n")
+cat("Best maxdepth:", best_params$maxdepth, "\n")
+cat("Best minsplit:", best_params$minsplit, "\n")
+cat("Best minbucket:", best_params$minbucket, "\n")
+cat("Training accuracy:", round(train_accuracy * 100, 2), "%\n")
+cat("Testing accuracy:", round(test_accuracy * 100, 2), "%\n")
+```
+```{r}
+rpart.plot(best_dt_model,
+           main="Gini Inpurity - best hyperparameters model")
+rpart.plot(decision_tree_model_gini,
+           main="Gini Inpurity - default model")
+```
+As we have suspected, the best model, even with tweaking the hyperparameters is still the one created using default rpart() configuration. The model with tuned hyperparameters achieved better performance on the training dataset, however, the accuracy score for the testing dataset remains the same.
 
 
 # Random forest
@@ -163,6 +298,7 @@ random_forest_df <- df
 
 #Since our task is to classify data, we will be fitting a logistic regression model into the VIF function
 vif_model <- glm(target ~ ., data = random_forest_df, family = "binomial")
+summary(vif_model)
 vif_values <- vif(vif_model)
 #vif_values
 names(vif_values)[which.max(vif_values)]
@@ -239,56 +375,18 @@ rf_accuracy <- mean(rf_predictions == test_data$target)
 
 cat("Random Forest accuracy:", round(rf_accuracy * 100, 2), "%")
 ```
-As we can see. Just by using the default values (+ setting the replacement and importance to TRUE), we got up to 95.34% accuracy. This score is outstanding, but we are wondering if we can do even better by searching through multiple combinations of hyperparameters to find a better result. We have decided to use random search for hyperparameters. We could also use grid search, however, finding the best combinations of hyperparameters with grid search could become very exhaustive, especially with the ~60 features we have. Random search could find a better combination of hyperparameters much faster because it does not waste time trying every combination that exists.
+As we can see. Just by using the default values (+ setting the replacement and importance to TRUE), we got up to 95.34% accuracy. This score is outstanding, but we are wondering if we can do even better by searching through multiple combinations of hyperparameters to find a better result. We have decided to use random search for hyperparameters. We could also use grid search, however, finding the best combinations of hyperparameters with grid search could become very exhaustive, especially with the ~55 features we have. Random search could find a better combination of hyperparameters much faster because it does not waste time trying every combination that exists.
 
-Sources:
-https://medium.com/biased-algorithms/random-search-in-r-3ce5631fe424
-
-For the random search, we will be using caret's train() function, into which we will pass the "rf" method. The train() function of caret still uses the library we have used for a single random forest (randomForest) - this is confirmed in the documentation of train(). It is simply a function designed for hyperparameter tuning.
-
-Sources:
-https://www.rdocumentation.org/packages/caret/versions/4.47/topics/train
-
-```{r}
-control <- trainControl(
-  method = "cv",
-  number = 5,
-  search = "random"
-)
-
-set.seed(69)
-
-rf_random_model <- train(
-  target ~ .,
-  data = train_data,
-  method = "rf",
-  trControl = control,
-  tuneLength = 10,
-  replace=TRUE,
-  importance = TRUE
-)
-
-rf_random_model$bestTune
-
-best_rf_predictions <- predict(
-  rf_random_model,
-  newdata = test_data
-)
-
-best_rf_accuracy <- mean(best_rf_predictions == test_data$target)
-
-cat("Best Random Forest test accuracy:", round(best_rf_accuracy * 100, 2), "%")
-```
-As we can see, when we use train(), the only hyperparameter we are able to tweak is the **mtry** parameter. Mtry is important, however, this kind of random testing only provided minor improvements (around 0.5% accuracy). We are wondering if it is possible to go beyond that. In this instance, we will not be using a built-in function, instead we will try to do our own version of a randomized search, where we try to tweak all the numeric parameters of the random forest - mtree, mtry, nodesize, maxnodes.
+At first, we tried using the train() function, however, the only hyperparameter we are able to tweak is the **mtry** parameter. Mtry is important, but this kind of random testing only provided minor improvements (around 0.5% accuracy). We are wondering if it is possible to go beyond that. In this instance, we will not be using a built-in function, instead we will try to do our own version of a randomized search, where we try to tweak all the numeric parameters of the random forest - mtree, mtry, nodesize, maxnodes using the randomForest library and cross validation. 
 ```{r}
 set.seed(69)
 
 #n_features <- ncol(train_data) - 1
-rf_iterations <- 500
+rf_iterations <- 200
 
 #we will create a "table" for each iteration of the random forest model
 random_grid <- data.frame(
-  #selecting the number of features considered, from 1 to 20, we used to include all features, but the accuracy score actually decreased
+  #selecting the number of features, from 1 to 20, we used to include all features, but the accuracy score actually decreased
   mtry = sample(1:30, rf_iterations, replace = TRUE),
   
   #selecting the number of trees, at first we wanted to choose 100:1000, but then decided to go by sequence of 25 trees from 100 to 1000 trees
@@ -296,38 +394,69 @@ random_grid <- data.frame(
   ntree = sample(seq(100, 1000, by = 50), rf_iterations, replace = TRUE),
   
   #for nodesize, we decided to not start from 1, because that could cause the trees to overfit quite easily if the nodes only needed 1 or 2 samples to split
-  nodesize = sample(5:30, rf_iterations, replace = TRUE),
+  nodesize = sample(20:100, rf_iterations, replace = TRUE),
   
   #for max nodes, we decided for a sequence of 10 to 100 by 5, 100 might be a bit too much and will overfit the data, we will see
-  maxnodes = sample(seq(10,100, by=5), rf_iterations, replace = TRUE)
+  maxnodes = sample(seq(10,40, by=2), rf_iterations, replace = TRUE)
 )
 
 #if any of the hyperparameter sampling ranges changed (for example maxnodes from 10-100 to 10-50), it is because we found that the randomization caused overfitting or we found a better range for the hyperparameter 
+#we had to reduce the maxnodes, because the tree started overfitting at the bigger number of nodes, also we changed nodesize from 5:20, to 20:100, which helped with overfitting
+#we managed to reduce overfitting this way by 1.6% (99.8 -> 98.24)
 ```
 
 ```{r}
-#variables for storing the model found
+set.seed(69)
+
+train_data$target <- as.factor(train_data$target)
+test_data$target <- as.factor(test_data$target)
+
 best_accuracy <- 0
 best_rf_model <- NULL
 best_params <- NULL
 results <- data.frame()
 
+k_folds <- 5
+
+folds <- createFolds(
+  train_data$target,
+  k = k_folds,
+  list = TRUE,
+  returnTrain = FALSE
+)
+
 for (i in 1:nrow(random_grid)) {
-  set.seed(69)
-  rf_model <- randomForest(
-    target ~ .,
-    data = train_data,
-    mtry = random_grid$mtry[i],
-    ntree = random_grid$ntree[i],
-    nodesize = random_grid$nodesize[i],
-    maxnodes = random_grid$maxnodes[i],
-    #we tried setting replace to FALSE, however the accuracy decreased by ~0.8%
-    replace = TRUE,
-    importance = TRUE
-  )
   
-  pred <- predict(rf_model, newdata = test_data)
-  accuracy <- mean(pred == test_data$target)
+  cv_accuracies <- c()
+  
+  for (fold_id in 1:k_folds) {
+    
+    validation_index <- folds[[fold_id]]
+    
+    cv_train_data <- train_data[-validation_index, ]
+    cv_validation_data <- train_data[validation_index, ]
+    
+    cv_train_data$target <- as.factor(cv_train_data$target)
+    cv_validation_data$target <- as.factor(cv_validation_data$target)
+    
+    rf_model <- randomForest(
+      target ~ .,
+      data = cv_train_data,
+      mtry = random_grid$mtry[i],
+      ntree = random_grid$ntree[i],
+      nodesize = random_grid$nodesize[i],
+      maxnodes = random_grid$maxnodes[i],
+      replace = TRUE,
+      importance = TRUE
+    )
+    
+    pred <- predict(rf_model, newdata = cv_validation_data)
+    accuracy <- mean(pred == cv_validation_data$target)
+    
+    cv_accuracies <- c(cv_accuracies, accuracy)
+  }
+  
+  mean_cv_accuracy <- mean(cv_accuracies)
   
   results <- rbind(
     results,
@@ -336,32 +465,49 @@ for (i in 1:nrow(random_grid)) {
       ntree = random_grid$ntree[i],
       nodesize = random_grid$nodesize[i],
       maxnodes = random_grid$maxnodes[i],
-      accuracy = accuracy
+      cv_accuracy = mean_cv_accuracy
     )
   )
-  if (accuracy > best_accuracy) {
-    best_accuracy <- accuracy
-    best_rf_model <- rf_model
+  
+  if (mean_cv_accuracy > best_accuracy) {
+    best_accuracy <- mean_cv_accuracy
     best_params <- random_grid[i, ]
   }
 }
 
-results <- results[order(results$accuracy, decreasing = TRUE), ]
+results <- results[order(results$cv_accuracy, decreasing = TRUE), ]
 results
+best_params
+best_accuracy
 ```
 
-The best outcome we got from this hyperparameter tuning after we tried changing all the randomised ranges of the hyperparameters was 96.99%. That is an upgrade of 1.1% compared to the train() function. What we have not done yet is checking for overfitting. We will now test the best model on both the train dataset and the test dataset and compare their accuracy.
 ```{r}
-set.seed(69)
+best_rf_model <- randomForest(
+  target ~ .,
+  data = train_data,
+  mtry = best_params$mtry,
+  ntree = best_params$ntree,
+  nodesize = best_params$nodesize,
+  maxnodes = best_params$maxnodes,
+  replace = TRUE,
+  importance = TRUE
+)
+```
+
+```{r}
 test_pred <- predict(best_rf_model, newdata = test_data)
 test_accuracy <- mean(test_pred == test_data$target)
 
 train_pred <- predict(best_rf_model, newdata = train_data)
 train_accuracy <- mean(train_pred == train_data$target)
 
+cat("Best CV accuracy:", round(best_accuracy * 100, 2), "%\n")
 cat("Training accuracy:", round(train_accuracy * 100, 2), "%\n")
 cat("Testing accuracy:", round(test_accuracy * 100, 2), "%\n")
 ```
+
+The best outcome we got from this hyperparameter tuning after we tried changing all the randomised ranges of the hyperparameters was 96.99%. That is an upgrade of 1.1% compared to the train() function. What we have not done yet is checking for overfitting. We will now test the best model on both the train dataset and the test dataset and compare their accuracy.
+
 
 ## Hyperparameter tuning conclusion
 The most succesful model came from our own implementation of random search with an accuracy of 96.99%. Even though it might not seem like a substanstial difference, the "baseline" for this model was already very high at 95.34%. 
@@ -387,123 +533,7 @@ We debated wether to remove it, simply because it carries a lot of influencer ov
 
 
 
-
-# K-NN
-
-
-
-Sources
-https://www.rdocumentation.org/packages/class/versions/7.3-23/topics/knn
-
-## Finding the optimal k-value
-Since the k-NN algorithm is based on the number of nearest neighbour (k), tweaking this number might give us better results. To figure out the best number of neighbours, we will use the Elbow method, as shown in Module 6. For this, we will create models for 1-20 number of k. For each iteration of the model creating, we will store the accuracy of the given model. We will find the elbow, after which the models accuracy deteriorates or does not get substantially better. 
-
-Since we are using accuracy, not WCSS, like in the Module 6 for K-means, we will plot the differences of 1-accuracy, so we keep the interpretability of the elbow method (=> so the lines on the graph bend like the elbow does)
-```{r}
-k_number <- 1:30
-k_accuracies <- numeric(length(k_number))
-
-
-for(i in k_number){
-  set.seed(69)
-  pred <- knn(
-    train = train_scaled,
-    test = test_scaled,
-    cl = y_train,
-    k = i
-  )
-  accuracy <- mean(pred == y_test)
-  k_accuracies[i]=1-accuracy
-}
-
-results <- data.frame(k = k_number, accuracy = k_accuracies)
-
-plot(
-  results$k,
-  results$accuracy,
-  type = "b",
-  pch = 19,
-  xlab = "Number of neighbors k",
-  ylab = "Error",
-  main = "Choosing k for k-NN"
-)
-
-best_k <- results$k[which.min(results$accuracy)]
-best_accuracy <- 1 - results$accuracy[results$k==best_k]
-cat("The best k is",best_k,", with accuracy",best_accuracy,"%")
-```
-
-```{r}
-k_number <- 1:30
-
-train_errors <- numeric(length(k_number))
-test_errors <- numeric(length(k_number))
-
-for (i in k_number) {
-  set.seed(69)
-  # Prediction on training data
-  pred_train <- knn(
-    train = train_scaled,
-    test = train_scaled,
-    cl = y_train,
-    k = i
-  )
-  
-  train_accuracy <- mean(pred_train == y_train)
-  train_errors[i] <- 1 - train_accuracy
-  
-  # Prediction on testing data
-  pred_test <- knn(
-    train = train_scaled,
-    test = test_scaled,
-    cl = y_train,
-    k = i
-  )
-  
-  test_accuracy <- mean(pred_test == y_test)
-  test_errors[i] <- 1 - test_accuracy
-}
-
-results <- data.frame(
-  k = k_number,
-  train_error = train_errors,
-  test_error = test_errors
-)
-
-plot(
-  results$k,
-  results$train_error,
-  col="red",
-  type = "b",
-  pch = 19,
-  ylim = c(0, max(results$train_error, results$test_error)),
-  xlab = "Number of neighbors k",
-  ylab = "Error rate",
-  main = "Training vs Testing Error for k-NN"
-)
-
-lines(
-  results$k,
-  results$test_error,
-  col="blue",
-  type = "b",
-  pch = 19
-)
-
-legend(
-  "bottomright",
-  legend = c("Training error", "Testing error"),
-  col = c("red","blue"),
-  lty = 1,
-  pch = 19
-)
-
-best_k <- results$k[which.min(results$test_error)]
-best_accuracy <- 1 - results$test_error[results$k == best_k]
-
-cat("The best k is", best_k, ", with test accuracy", round(best_accuracy * 100, 2), "%")
-```
-# New knn
+#k-NN
 As the final non-parametric model we have chosen k-NN. At first we wanted to use XGBoost, because we thought that the decision tree and random forest would not be as powerful, so we wanted to use boosting to combine the "weaker" trees into a better one. However, the accuracy of the tree models turned out to be excellent, that is why we decided to move on from tree algorithms.
 
 k-NN is simple, and unlike tree algorithms, that split the feature space based on conditions, k-NN uses the similarity of data to make decisions. We wanted to choose it due to the use of a different technique. However, k-NN has a defining problem, sometimes called the "curse of dimensionality". What this means is that if a dataset contains too many features, the distances between individual features can become similar, which can cause the model to predict unreliably. This is a big problem for our dataset, which contains ~55 features.
@@ -512,91 +542,74 @@ To counter this problem, we are planning on implementing a simple feature select
 
 What we found from using the tree models is the fact that our dataset contains a small set of features, which carry the most influence over the outcome of the prediction. We want to see exactly how much the number of features changes the accuracy and if a different algorithm can bring even more accuracy to our predictions.
 
+## Statistical assumptions
+Sources for statistical assumptions of k-NN: \n
+https://medium.com/analytics-vidhya/k-nearest-neighbors-algorithm-7952234c69a4 \n
+
+### Independence
+This dataset consists of random matches from the game League of Legends. Each of the games is independent of eachother, this is because each game is new. There are no rematch mechanics.
+### Multicolinearity
+
+### Outliers
+Sensitive to outliers.
+```{r}
+count_outliers_iqr <- function(df) {
+  numeric_cols <- sapply(df, is.numeric)
+  df_num <- df[, numeric_cols, drop = FALSE]
+  
+  result <- data.frame(
+    column = character(),
+    number_of_outliers = integer()
+  )
+  
+  for (col in names(df_num)) {
+    Q1 <- quantile(df_num[[col]], 0.25, na.rm = TRUE)
+    Q3 <- quantile(df_num[[col]], 0.75, na.rm = TRUE)
+    IQR_value <- Q3 - Q1
+    
+    lower <- Q1 - 1.5 * IQR_value
+    upper <- Q3 + 1.5 * IQR_value
+    
+    count <- sum(df_num[[col]] < lower | df_num[[col]] > upper, na.rm = TRUE)
+    
+    result <- rbind(result, data.frame(
+      column = col,
+      number_of_outliers = count
+    ))
+  }
+  
+  result <- result[order(-result$number_of_outliers), ]
+  
+  print(result)
+}
+```
+
+```{r}
+count_outliers_iqr(df)       # rows with at least one outlier
+```
+
+
+### Sample size
+May overfit on small datasets (that is what we want to test)
+### Normality, Homoscedasticity, Linear relationship
+Not required
+### Feature scaling
+Due to k-NN being a distance-based method of classification
+
 ```{r}
 #k-nn
 library(class)
 library(kknn)
 ```
 
-## Feature selection
+
+##Implementation
+
+###Testing with all features
 ```{r}
-# Extract feature importance
-importance_values <- importance(best_rf_model)
-
-# Get top 20 feature names using MeanDecreaseGini
-top20_features <- rownames(
-  importance_values[order(importance_values[, "MeanDecreaseAccuracy"], decreasing = TRUE), ]
-)[1:20]
-
-# Show selected features
-top20_features
-
-# Create new dataframe from original df
-df_top20 <- df %>%
-  select(all_of(top20_features), target)
-
-knn_df <- df[, c("target",top20_features)]
-```
-
-Since k-NN is sensitive to outliers because it uses individual distances between features, we need to analyze outliers. For detecting outliers, we are going to borrow a fucntion from our EDA.
-## Outlier detection
-```{r}
-detect_outliers <- function(df) {
-  nums <- names(df)[sapply(df, is.numeric)]
-  
-  results <- data.frame(
-    variable = character(),
-    total = integer(),
-    n_outliers = integer(),
-    pct_outliers = numeric(),
-    lower_bound = numeric(),
-    upper_bound = numeric(),
-    min_value = numeric(),
-    max_value = numeric(),
-    stringsAsFactors = FALSE
-  )
-  
-  for (col in nums) {
-    x <- df[[col]][!is.na(df[[col]])]
-    
-    q1 <- quantile(x, 0.25)
-    q3 <- quantile(x, 0.75)
-    iqr <- q3 - q1
-    
-    #we will try to detect only extreme outliers
-    lower <- q1 - 1.5 * iqr
-    upper <- q3 + 1.5 * iqr
-    
-    outliers <- x[x < lower | x > upper]
-    
-    results <- rbind(results, data.frame(
-      variable = col,
-      n_outliers = length(outliers)
-    ))
-  }
-  
-  results <- results[order(-results$n_outliers), ]
-  rownames(results) <- NULL
-  return(results)
-}
-
-```
-
-We run the function to detect outliers in the top 20 features
-```{r}
-  outlier_summary <- detect_outliers(knn_df)
-
-  # see only variables with outliers
-  outlier_summary[outlier_summary$n_outliers > 0, ]
-```
-
-After selecting just the most
-
-#Implementation
-```{r}
+knn_df <- df
 knn_df$target <- as.factor(knn_df$target)
 
-#toto asi neni treba ked robim aj feature comparison
 set.seed(69)
 train_index <- sample(1:nrow(knn_df), train_margin * nrow(knn_df))
 
@@ -604,132 +617,385 @@ knn_train_data <- knn_df[train_index, ]
 knn_test_data  <- knn_df[-train_index, ]
 ```
 
+Base model with default hyperparameters
 ```{r}
-feature_counts <- c(3,6,9,12,15,18,20)
+library(kknn)
+model <- kknn(
+          target ~ .,
+          knn_train_data,
+          knn_test_data
+        )
 
-control <- trainControl(
-  method = "cv",
-  number = 3
-)
-
-knn_grid <- expand.grid(
-  kmax = seq(1, 31, by = 2),
-  distance = c(1, 2),
-  kernel = c("rectangular", "triangular", "gaussian")
-)
-
-knn_results <- data.frame()
-best_accuracy <- 0
-best_knn_model <- NULL
-best_knn_features <- NULL
-best_feature_count <- NULL
-
+pred <- predict(model)
+acc <- mean(pred == knn_test_data$target)
+acc
 ```
 
-```{r}
-feature_counts <- 2:20
+### Outliers
 
-for (feature_count in feature_counts) {
-  
-  #zoberieme top 1-N features
-  selected_features <- top20_features[1:feature_count]
-  
-  set.seed(69)
-  train_subset <- knn_train_data[, c(selected_features, "target")]
-  test_subset  <- knn_test_data[, c(selected_features, "target")]
-  
-  knn_scaled <- train(
-    target ~ .,
-    data = train_subset,
-    method = "kknn",
-    trControl = control,
-    tuneGrid = knn_grid,
-    preProcess = c("center", "scale")
-  )
-  
-  predictions <- predict(knn_scaled, newdata = test_subset)
-  accuracy <- mean(predictions == test_subset$target)
-  
-  knn_results <- rbind(
-    knn_results,
-    data.frame(
-      feature_count = feature_count,
-      kmax = knn_scaled$bestTune$kmax,
-      distance = knn_scaled$bestTune$distance,
-      kernel = knn_scaled$bestTune$kernel,
-      accuracy = accuracy
-    )
-  )
-  
-  if (accuracy > best_accuracy) {
-    best_accuracy <- accuracy
-    best_knn_model <- knn_scaled
-    best_knn_features <- selected_features
-    best_feature_count <- feature_count
+### Multicollinearity
+Multicollinearity can affect k-NN performance, we can try eliminating the features with high multicollinearity, just like we did in RF. 
+
+###Hyperparameter tuning
+The hyperparameters we will be tuning to find the best k-NN model is the k value, meaning the number of neighbours needed for classifying a point, distance, and kernel. We can choose distances 1,2,3 - Manhattan, Euclidian and Minkowski. There are 10 kernels available for kknn, we chose to try all of them. The final number of combinations adds up to 1500.
+```{r}
+#we would like to avoid using k that is too big, since it could easily misidentify values, however, we want to test it
+#upon testing it on out implementation and using train() function, we have decided cut out hyperparameters to only the best ranges
+k_values <- 1:35
+distance_metrics <- 1:2
+kernels <- c(
+  "rectangular",
+  "epanechnikov",
+  "biweight",
+  "rank"
+)
+
+k_folds <- 5
+
+set.seed(69)
+folds <- createFolds(
+  knn_train_data$target,
+  k = k_folds,
+  list = TRUE,
+  returnTrain = FALSE
+)
+
+best_k <- 0
+best_metric <- 0
+best_kernel <- NULL
+knn_best_model <- NULL
+best_accuracy <- 0
+results <- data.frame()
+```
+
+We will iterate through all the combinations - grid search, since there is "only" 1500 combinations, doing this will not be as computationaly expensive as random forest, for which we opted to use random search.
+###NEW HYPERSESRCH
+```{r}
+for (k in k_values) {
+  for (kernel in kernels) {
+    for (metric in distance_metrics) {
+      
+      fold_accuracies <- numeric(k_folds)
+      
+      for (fold_id in 1:k_folds) {
+        
+        validation_index <- folds[[fold_id]]
+        
+        cv_train_data <- knn_train_data[-validation_index, ]
+        cv_validation_data <- knn_train_data[validation_index, ]
+        
+        model <- kknn(
+          target ~ .,
+          train = cv_train_data,
+          test = cv_validation_data,
+          k = k,
+          distance = metric,
+          kernel = kernel,
+          scale = TRUE
+        )
+        
+        predictions <- predict(model)
+        fold_accuracies[fold_id] <- mean(predictions == cv_validation_data$target)
+      }
+      
+      cv_accuracy <- mean(fold_accuracies)
+      
+      results <- rbind(
+        results,
+        data.frame(
+          k = k,
+          kernel = kernel,
+          distance = metric,
+          cv_accuracy = cv_accuracy
+        )
+      )
+      
+      if (cv_accuracy > best_accuracy) {
+        best_accuracy <- cv_accuracy
+        best_k <- k
+        best_metric <- metric
+        best_kernel <- kernel
+      }
+    }
   }
-  
-  cat("Finished feature count:", feature_count, "\n")
 }
 
-knn_results
-cat("Best accuracy:", round(best_accuracy * 100, 2), "%\n")
-```
+results <- results[order(results$cv_accuracy, decreasing = TRUE), ]
 
-results of tuning
-```{r}
-knn_results <- knn_results[order(knn_results$accuracy, decreasing = TRUE), ]
-
-knn_results
+results
 ```
 
 ```{r}
-cat("Best number of features:", best_feature_count, "\n")
-cat("Best selected features:\n")
-print(best_knn_features)
-
-cat("\nBest k-NN parameters:\n")
-print(best_knn_model$bestTune)
-
-cat("\nWas scaling used?", best_knn_scaled, "\n")
-cat("Best k-NN test accuracy:", round(best_accuracy * 100, 2), "%\n")
-```
-
-```{r}
-final_train_data <- knn_train_data[, c(best_knn_features, "target")]
-final_test_data  <- knn_test_data[, c(best_knn_features, "target")]
-
-final_knn_predictions <- predict(
-  best_knn_model,
-  newdata = final_test_data
+knn_best_model <- kknn(
+  target ~ .,
+  train = knn_train_data,
+  test = knn_test_data,
+  k = best_k,
+  distance = best_metric,
+  kernel = best_kernel,
+  scale = TRUE
 )
 
-table(
-  Predicted = final_knn_predictions,
-  Actual = final_test_data$target
+final_predictions <- predict(knn_best_model)
+final_accuracy <- mean(final_predictions == knn_test_data$target)
+
+cat("Best CV accuracy:", round(best_accuracy * 100, 2), "%\n")
+cat("Best k:", best_k, "\n")
+cat("Best distance metric:", best_metric, "\n")
+cat("Best kernel:", best_kernel, "\n")
+cat("Final test accuracy:", round(final_accuracy * 100, 2), "%\n")
+```
+
+
+```{r}
+# library(caret)
+# library(kknn)
+# 
+# set.seed(123)
+# 
+# control <- trainControl(
+#   method = "cv",
+#   number = 5
+# )
+# 
+# knn_grid <- expand.grid(
+#   kmax = 1:50,
+#   distance = 1:3,
+#   kernel = c(
+#     "rectangular",
+#     "triangular",
+#     "epanechnikov",
+#     "biweight",
+#     "triweight",
+#     "cos",
+#     "inv",
+#     "gaussian",
+#     "rank",
+#     "optimal"
+#   )
+# )
+# 
+# knn_tuned_model <- train(
+#   target ~ .,
+#   data = knn_train_data,
+#   method = "kknn",
+#   trControl = control,
+#   tuneGrid = knn_grid,
+#   preProcess = c("center", "scale"),
+#   metric = "Accuracy"
+# )
+# 
+# best_params <- knn_tuned_model$bestTune
+# 
+# final_predictions <- predict(
+#   knn_tuned_model,
+#   newdata = knn_test_data
+# )
+# 
+# final_accuracy <- mean(final_predictions == knn_test_data$target)
+# 
+# results <- knn_tuned_model$results
+# results <- results[order(results$Accuracy, decreasing = TRUE), ]
+# 
+# print(results)
+# 
+# cat("Best CV accuracy:", round(max(knn_tuned_model$results$Accuracy) * 100, 2), "%\n")
+# cat("Best k:", best_params$kmax, "\n")
+# cat("Best distance metric:", best_params$distance, "\n")
+# cat("Best kernel:", best_params$kernel, "\n")
+# cat("Final test accuracy:", round(final_accuracy * 100, 2), "%\n")
+```
+
+We also tried to use train() and trainControl() to control the cross validation and training of the models. Due to the different creation of folds for the training and validation of the models, the outcomes slightly differed. We achieved similar results in terms of accuracy, however, the training time of all the models took 5x longer using the train() function (2 hours), so we have decided to choose our implementation.
+
+
+## Feature selection
+Since our dataset contains ~55 features, we have decided to try using a dimensionality reduction method to lower the number of features. For this, we have chosen PCA. 
+
+```{r}
+set.seed(69)
+
+knn_train_data$target <- as.factor(knn_train_data$target)
+knn_test_data$target <- as.factor(knn_test_data$target)
+
+x_train <- knn_train_data[, names(knn_train_data) != "target"]
+y_train <- knn_train_data$target
+
+x_test <- knn_test_data[, names(knn_test_data) != "target"]
+y_test <- knn_test_data$target
+
+#accuracy was the highest for 0.4 threshold, therefore we went lower
+#in the end, the accuracy stayed the biggest for 0.4, 
+pca_thresholds <- c(0.2,0.25,0.3,0.35,0.4,0.45, 0.5,0.55)
+
+k_values <- 15:45
+distance_metrics <- 1:2
+kernels <- c(
+  "rectangular",
+  "epanechnikov",
+  "biweight",
+  "inv",
+  "rank"
 )
 
-final_knn_accuracy <- mean(final_knn_predictions == final_test_data$target)
+k_folds <- 5
 
-cat("Final k-NN accuracy:", round(final_knn_accuracy * 100, 2), "%")
+folds <- createFolds(
+  y_train,
+  k = k_folds,
+  list = TRUE,
+  returnTrain = FALSE
+)
+
+results <- data.frame()
+
+best_cv_accuracy <- 0
+best_threshold <- NULL
+best_k <- NULL
+best_distance <- NULL
+best_kernel <- NULL
+best_components <- NULL
 ```
 
 ```{r}
-plot(
-  knn_results$feature_count,
-  knn_results$accuracy,
-  type = "p",
-  pch = 19,
-  xlab = "Number of selected features",
-  ylab = "Test accuracy",
-  main = "k-NN Accuracy by Number of Selected Features"
-)
+for (threshold in pca_thresholds) {
+  
+  for (k in k_values) {
+    for (distance in distance_metrics) {
+      for (kernel in kernels) {
+        
+        fold_accuracies <- numeric(k_folds)
+        
+        for (fold_id in 1:k_folds) {
+          
+          validation_index <- folds[[fold_id]]
+          
+          cv_x_train <- x_train[-validation_index, ]
+          cv_y_train <- y_train[-validation_index]
+          
+          cv_x_validation <- x_train[validation_index, ]
+          cv_y_validation <- y_train[validation_index]
+          
+          # PCA must be fitted only on CV training data
+          pca_model <- preProcess(
+            cv_x_train,
+            method = c("center", "scale", "pca"),
+            thresh = threshold
+          )
+          
+          cv_x_train_pca <- predict(pca_model, cv_x_train)
+          cv_x_validation_pca <- predict(pca_model, cv_x_validation)
+          
+          cv_train_pca <- data.frame(
+            cv_x_train_pca,
+            target = cv_y_train
+          )
+          
+          cv_validation_pca <- data.frame(
+            cv_x_validation_pca,
+            target = cv_y_validation
+          )
+          
+          model <- kknn(
+            target ~ .,
+            train = cv_train_pca,
+            test = cv_validation_pca,
+            k = k,
+            distance = distance,
+            kernel = kernel
+          )
+          
+          predictions <- predict(model)
+          
+          fold_accuracies[fold_id] <- mean(
+            predictions == cv_validation_pca$target
+          )
+        }
+        
+        mean_cv_accuracy <- mean(fold_accuracies)
+        
+        results <- rbind(
+          results,
+          data.frame(
+            pca_threshold = threshold,
+            k = k,
+            distance = distance,
+            kernel = kernel,
+            cv_accuracy = mean_cv_accuracy
+          )
+        )
+        
+        if (mean_cv_accuracy > best_cv_accuracy) {
+          best_cv_accuracy <- mean_cv_accuracy
+          best_threshold <- threshold
+          best_k <- k
+          best_distance <- distance
+          best_kernel <- kernel
+        }
+      }
+    }
+  }
+}
 ```
 
 ```{r}
-plot(best_knn_model)
-```
+best_pca_model <- preProcess(
+  x_train,
+  method = c("center", "scale", "pca"),
+  thresh = best_threshold
+)
 
-TODO check ktora feature je najviac important ked ziskas najlepsi model - postupne odstranuj jednotlive features a pozoruj ako klesa accuracy
+x_train_pca <- predict(best_pca_model, x_train)
+x_test_pca <- predict(best_pca_model, x_test)
+
+knn_train_pca <- data.frame(
+  x_train_pca,
+  target = y_train
+)
+
+knn_test_pca <- data.frame(
+  x_test_pca,
+  target = y_test
+)
+
+final_model <- kknn(
+  target ~ .,
+  train = knn_train_pca,
+  test = knn_test_pca,
+  k = best_k,
+  distance = best_distance,
+  kernel = best_kernel
+)
+
+test_predictions <- predict(final_model)
+test_accuracy <- mean(test_predictions == knn_test_pca$target)
+
+train_model <- kknn(
+  target ~ .,
+  train = knn_train_pca,
+  test = knn_train_pca,
+  k = best_k,
+  distance = best_distance,
+  kernel = best_kernel
+)
+
+train_predictions <- predict(train_model)
+train_accuracy <- mean(train_predictions == knn_train_pca$target)
+
+results <- results[order(results$cv_accuracy, decreasing = TRUE), ]
+
+print(results)
+
+cat("Best PCA threshold:", best_threshold, "\n")
+cat("Number of PCA components:", ncol(x_train_pca), "\n")
+cat("Best k:", best_k, "\n")
+cat("Best distance:", best_distance, "\n")
+cat("Best kernel:", best_kernel, "\n")
+cat("Best CV accuracy:", round(best_cv_accuracy * 100, 2), "%\n")
+cat("Training accuracy:", round(train_accuracy * 100, 2), "%\n")
+cat("Testing accuracy:", round(test_accuracy * 100, 2), "%\n")
+cat("Train-test gap:", round((train_accuracy - test_accuracy) * 100, 2), "%\n")
+```
 
 
 
