@@ -9,6 +9,24 @@ output: html_document
 
 Our goal for this notebook is to build 3 different statistical parametric models for predicting win (binary classification) on our League of Legends dataset. We aim to then compare these models based on metrics to find our which model performs the best
 
+# Packages
+
+```{r}
+packages <- c("e1071", "pROC", "caret", "MASS", "biotools", "knitr")
+
+install_if_missing <- function(pkgs) {
+  missing <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
+  if (length(missing) > 0) {
+    cat("Installing:", paste(missing, collapse = ", "), "\n")
+    install.packages(missing)
+  }
+}
+
+install_if_missing(packages)
+```
+
+
+
 # Data Load
 
 ```{r}
@@ -79,23 +97,10 @@ lapply(names(train_data), function(f) plot_logistic(train_data, f))
 After observing each feature we decided to keep these following features
 
 ```{r}
-predictors <- c("diff_assists",
-                "diff_triple_kills",
+predictors <- c("diff_champion_experience",
                 "diff_largest_multi_kill",
-                "diff_killing_sprees",
-                "diff_total_damage_dealt",
-                "diff_total_damage_taken",
-                "diff_physical_damage_dealt",
-                "diff_true_damage_dealt",
-                "diff_gold_spent",
-                "diff_total_enemy_jungle_minions_killed",
                 "diff_dragon_kills",
-                "diff_baron_kills",
-                "diff_inhibitor_takedowns",
-                "diff_total_heal",
-                "diff_solo_kills",
-                "diff_outnumbered_kills"
-)
+                "diff_solo_kills")
 
 train_data_lr <- train_data[, c("target", predictors)]
 test_data_lr <- test_data[, c("target", predictors)]
@@ -103,95 +108,11 @@ test_data_lr <- test_data[, c("target", predictors)]
 
 ### Colinearity
 
-We already dropped any features that had \|correlation\| \>= 0.8 in eda + preprocessing. What we need to do further is to check VIF and iteratively drop features with VIF \> 5.
-
-```{r}
-library(car)
-remove_vif <- function(df, threshold){
-  current_predictors <- setdiff(names(df), "target")
-  repeat {
-    current_formula <- as.formula(
-      paste("target ~", paste(current_predictors, collapse = " + "))
-    )
-    current_model <- glm(current_formula, data = df, family = "binomial")
-    
-    vif_vals <- vif(current_model)
-    max_vif <- max(vif_vals)
-    
-    if (max_vif <= threshold) break
-    
-    drop <- names(which.max(vif_vals))
-    current_predictors <- setdiff(current_predictors, drop)
-  }
-  return(current_predictors)
-}
-```
-
-Before doing VIF check
-
-```{r}
-length(names(train_data_lr))
-```
-
-After doing VIF check
-
-```{r}
-new_pred <- remove_vif(train_data_lr, 5)
-length(new_pred)
-```
-
-We only had to drop 1 feature
-
-```{r}
-train_data_lr <- train_data_lr[, c("target", new_pred)]
-test_data_lr <- test_data_lr[, c("target", new_pred)]
-```
+We already did this in preprocessing.
 
 ### Extreme outliers
 
-We decided to declare extreme outliers to be beyond 3\*IQR. We first check the outliers and than decide what to do. There could be some issues we dont want to just drop or clip any values if possible.
-
-```{r}
-detect_extreme_outliers <- function(df){
-  for (feat in names(df)) {
-    x <- df[[feat]]
-    Q1 <- quantile(x, 0.25)
-    Q3 <- quantile(x, 0.75)
-    IQR_val <- Q3 - Q1
-      
-    extreme <- which(x < Q1 - 3 * IQR_val | x > Q3 + 3 * IQR_val)
-      
-    if (length(extreme) > 0) {
-      cat(sprintf("%-45s extreme outliers: %d (%.2f%%)\n",
-                  feat, length(extreme),
-                  length(extreme) / length(x) * 100))
-    }
-  }
-}
-```
-
-```{r}
-detect_extreme_outliers(train_data_lr)
-```
-
-```{r}
-hist(train_data_lr$diff_triple_kills)
-boxplot(train_data_lr$diff_triple_kills)
-```
-
-For this feature we dont count these values as extreme outliers. The distribution doesnt look as bad as the boxplot shows. We will keep the feature and clip the other. Cap at 3 standard deviations
-
-```{r}
-for (feat in names(train_data_lr)) {
-  x <- train_data_lr[[feat]]
-  mu <- mean(x)
-  s <- sd(x)
-  train_data_lr[[feat]] <- pmax(pmin(x, mu + 3*s), mu - 3*s)
-  
-  # Apply same caps to test set using TRAIN mean/sd
-  test_data[[feat]] <- pmax(pmin(test_data[[feat]], mu + 3*s), mu - 3*s)
-}
-```
+We already did this in preprocessing.
 
 ## Model fit
 
@@ -210,30 +131,43 @@ precision <- function(tab){
   return(tab["1", "1"] / sum(tab["1", ]))
 }
 ```
+
+
+
+
 ### Metrics
+
+
+
+```{r}
+get_metrics <- function(tab){
+  data.frame(acc=sum(diag(tab)) / sum(tab),
+              prec=tab["1", "1"] / sum(tab["1", ]),
+              recall=tab["1", "1"] / sum(tab[, "1"]),
+              spec=tab["0", "0"] / sum(tab[, "0"]))
+}
+```
+
+
 
 ```{r}
 lrm_train_prob <- predict(log_regresion_model, type = "response")
 lrm_train_pred <- ifelse(lrm_train_prob > 0.5, 1, 0)
 train_tab <- table(Predicted = lrm_train_pred, Actual = train_data_lr$target)
 
-acc <- accuracy(train_tab)
-prec <- precision(train_tab)
-cat("Train Accuracy:", round(acc, 4), "\n")
-cat("Train Precision:", round(prec, 4), "\n")
+lr_train_metrics <- get_metrics(train_tab)
+print("Train")
+print(lr_train_metrics)
 
-cat("\n")
 lrm_test_prob <- predict(log_regresion_model, newdata = test_data_lr, type = "response")
 
 lrm_test_pred <- ifelse(lrm_test_prob > 0.5, 1, 0)
 
 test_tab <- table(Predicted = lrm_test_pred, Actual = test_data_lr$target)
 
-acc <- accuracy(test_tab)
-prec <- precision(test_tab)
-
-cat("Test Accuracy:", round(acc, 4), "\n")
-cat("Test Precision:", round(prec, 4), "\n")
+lr_test_metrics <- get_metrics(test_tab)
+print("Test")
+print(lr_test_metrics)
 
 
 tab_df <- as.data.frame(test_tab)
@@ -271,6 +205,9 @@ ggplot(coef_df, aes(x = estimate, y = feature, color = significant)) +
   labs(title = "Logistic Regression Coefficients",
        x = "Coefficient Estimate", y = "")
 ```
+```{r}
+names(train_data_lr)
+```
 
 
 ```{r}
@@ -284,6 +221,9 @@ plot(roc_obj, main = "ROC Curve",
      print.auc = TRUE, auc.polygon = TRUE)
 ```
 
+```{r}
+
+```
 
 
 ```{r}
@@ -339,31 +279,26 @@ for (feat in predictors) {
 }
 ```
 
-After observing the qqplots we decided to split the data
+After observing the qqplots we decided to split the data based on a criteria:
+- features that have < 20 unique values and are integeres are discrete
+- else continuous
 
 ```{r}
-discrete <- c("target", "diff_triple_kills", "diff_largest_multi_kill",
-              "diff_dragon_kills", "diff_baron_kills",
-              "diff_objectives_stolen", "diff_first_blood_kill",
-              "diff_first_blood_assist", "diff_first_tower_kill",
-              "diff_first_tower_assist", "diff_wards_guarded")
+get_discrete_features <- function(df){
+  discrete <- c()
+  for (fet in names(df)){
+    if (length(unique(df[[fet]])) < 20 & is.integer(df[[fet]]))
+      discrete <- c(discrete, fet)
+  }
+  discrete
+}
 
+
+discrete <- get_discrete_features(train_data)
 continuous <- setdiff(names(train_data), discrete)
+
 ```
 
-```{r}
-cat("\n Discrete \n")
-for (feat in discrete) {
-  cat(feat, length(unique(train_data[[feat]])), "\n")
-}
-
-cat("\n Continuous \n")
-for (feat in continuous) {
-  cat(feat, length(unique(train_data[[feat]])), "\n")
-}
-```
-
-We can see that we devided the data into groups where discrete features have \< 20 unique values.
 
 ### Target class split
 
@@ -507,12 +442,9 @@ nb_prob <- predict(nb_model, newdata = test_data_nb, type = "raw")
 
 tab_test <- table(Predicted = nb_pred, Actual = as.factor(test_data_nb$target))
 
-acc <- accuracy(tab_test)
-prec <- precision(tab_test)
-
-cat("Test Accuracy:", round(acc, 4), "\n")
-cat("Test Precision:", round(prec, 4), "\n")
-
+nb_test_metrics <- get_metrics(tab_test)
+print("Test")
+print(nb_test_metrics)
 
 # Predict on training data
 nb_train_pred <- predict(nb_model, newdata = train_data_nb, type = "class")
@@ -520,11 +452,9 @@ nb_train_pred <- predict(nb_model, newdata = train_data_nb, type = "class")
 # Accuracy
 tab_train <- table(nb_train_pred, as.factor(train_data_nb$target))
 
-acc <- accuracy(tab_train)
-prec <- precision(tab_train)
-cat("Train Accuracy:", round(acc, 4), "\n")
-cat("Train Precision:", round(prec, 4), "\n")
-
+nb_train_metrics <- get_metrics(tab_train)
+print("Train")
+print(nb_train_metrics)
 
 tab_df <- as.data.frame(tab_test)
 
@@ -554,7 +484,10 @@ for (fet in names(train_data_nb)){
 ```{r}
 probs <- predict(nb_model, test_data_nb, type = "raw")[, "1"]
 roc_obj <- roc(test_data_nb$target, probs)
-plot(roc_obj, main = paste("AUC:", round(auc(roc_obj), 3)))
+
+plot(roc_obj, main = "ROC Curve",
+     col = "blue", lwd = 2,
+     print.auc = TRUE, auc.polygon = TRUE)
 ```
 
 
@@ -575,107 +508,21 @@ LDA only work with continuous data which means we are splitting continuous again
 
 ### Continuous/Discrete Split
 
-For Naive Bayes we tryed to select continuous data by hand. Here we will try algorithmic approach for every average unique count \>= 5 we define the features as discrete.
-
-```{r}
-predictors <- setdiff(names(train_data), "target")
-
-continuous_alg <- c()
-discrete_alg <- c()
-
-for (feat in predictors) {
-  n_unique <- length(unique(train_data[[feat]]))
-  avg_count <- nrow(train_data) / n_unique
-  
-  if (avg_count >= 5) {
-    discrete_alg <- c(discrete_alg, feat)
-  } else {
-    continuous_alg <- c(continuous_alg, feat)
-  }
-}
-```
-
-Lets compare this approach and our visual only
-
-```{r}
-cat("Manual approach: ", length(continuous), "\n")
-cat("Alg approach: ", length(continuous_alg), "\n")
-
-temp <- c()
-for (feat in discrete) {
-  temp <- c(temp, length(unique(train_data[[feat]])))
-}
-max(temp)
-
-temp <- c()
-for (feat in discrete_alg) {
-  temp <- c(temp, length(unique(train_data[[feat]])))
-}
-max(temp)
-```
-
-We made the cut off for discrete feature having \< 20 unique values, whereas with the algorithmic approach the cut off is \< 185 🫢
-
-```{r}
-train_lda <- train_data[, c("target", continuous_alg)]
-test_lda <- test_data[, c("target", continuous_alg)]
-```
+We did this split already for NB
 
 ### Normality check
 
-Same as with NB we need to check normality for the continuous features for each target class
+Same as with NB we need to check normality for the continuous features for each target class. We did this for NB so we will take the preprocessed data
 
 ```{r}
-class_0 <- train_lda[train_lda$target == 0, ]
-class_1 <- train_lda[train_lda$target == 1, ]
-
-output <- check_normality(class_0, continuous_alg)
-fail_class_0 <- output$fail
-pass_class_0 <- output$pass
-
-output <- check_normality(class_1, continuous_alg)
-fail_class_1 <- output$fail
-pass_class_1 <- output$pass
-
-
-setdiff(names(pass_class_0), names(pass_class_1))
+train_lda <- train_data[, c("target", names(passed))]
+test_lda <- test_data[, c("target", names(passed))]
 ```
 
-features that passed normality check in class 1 also passed in class 0
-
-```{r}
-passed <- rbind(pass_class_0, pass_class_1)
-failed <- rbind(fail_class_0, fail_class_1)
-
-length(passed)
-
-train_lda <- train_lda[, c("target", names(passed))]
-test_lda <- test_lda[, c("target", names(passed))]
-```
-
-Compare to NB where we had 16 after continuous and normality check here we have 13 features.
 
 ### Colinearity
 
-Same as with logistic regression we will use VIF as metric if our data are colinear or not
-
-Before doing VIF check
-
-```{r}
-length(names(train_lda))
-```
-
-After doing VIF check
-
-```{r}
-new_pred <- remove_vif(train_lda, 5)
-length(new_pred)
-```
-
-```{r}
-train_lda <- train_lda[, c("target", new_pred)]
-test_lda <- test_lda[, c("target", new_pred)]
-```
+We  did this in preprocessing already
 
 ### Homoscedasticity
 
@@ -756,24 +603,20 @@ lda_model <- lda(
 ```{r}
 lda_train_pred <- predict(lda_model, train_lda)$class
 train_tab <- table(lda_train_pred, as.factor(train_lda$target))
-print(train_tab)
 
-acc <- accuracy(train_tab)
-prec <- precision(train_tab)
-
-cat("train Accuracy:", round(acc, 4), "\n")
-cat("train Precision:", round(prec, 4), "\n")
+lda_train_metrics <- get_metrics(train_tab)
+print("Train")
+print(lda_train_metrics)
 
 # Test accuracy
 lda_test_pred <- predict(lda_model, test_lda)$class
 test_tab <- table(Predicted = lda_test_pred, Actual = as.factor(test_lda$target))
 
 
-acc <- accuracy(test_tab)
-prec <- precision(test_tab)
 
-cat("Test Accuracy:", round(acc, 4), "\n")
-cat("Test Precision:", round(prec, 4), "\n")
+lda_test_metrics <- get_metrics(test_tab)
+print("Test")
+print(lda_test_metrics)
 
 tab_df <- as.data.frame(test_tab)
 
@@ -819,16 +662,26 @@ ggplot(coefs, aes(x = reorder(feature, abs(weight)), y = weight)) +
 
 # All models summary
 
+```{r}
+library(knitr)
 
-| model | train accuracy | train precision | test accuracy | test precision |
-|-------|----------------|-----------------|---------------|----------------|
-| LR    | 0.9661         | 0.9639          | 0.9671        | 0.9558         |
-| NB    | 0.9383         | 0.9291          | 0.9259        | 0.8974         |
-| LDA   | 0.9188         | 0.9064          | 0.9095        | 0.8803         |
+all_metrics <- rbind(
+  data.frame(Model = "Logistic Regression", Set = "Train", lr_train_metrics),
+  data.frame(Model = "Logistic Regression", Set = "Test",  lr_test_metrics),
+  data.frame(Model = "Naive Bayes",       Set = "Train", nb_train_metrics),
+  data.frame(Model = "Naive Bayes",       Set = "Test",  nb_test_metrics),
+  data.frame(Model = "LDA",       Set = "Train", lda_train_metrics),
+  data.frame(Model = "LDA",       Set = "Test",  lda_test_metrics)
+)
+
+kable(all_metrics, digits = 4, row.names = FALSE,
+      col.names = c("Model", "Set", "Accuracy", "Precision", "Recall", "Specificity"),
+      caption = "Model Comparison")
+```
 
 # Conclusion
 
-Our main metric is accuracy, based on these results the best model is Logistic regression. We also compare the train and test accuracy and concluded that the model is not overfit on  training data.
+Our main metric is accuracy, based on these results the best model is Logistic regression and LDA with the same metrics. We also compare the train and test accuracy and concluded that the model is not overfit on  training data.
 
 # Next steps
 

@@ -1,0 +1,296 @@
+---
+title: "Feature selection"
+author: "Milan Mikuláš, Marek Vatrt"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Goal
+In this section we will perform feature selection on our processed data using 3 different techniques.
+1. lasso regression
+2. elastic net
+3. mixed selection
+
+We will then fit the selected features into our best performing model which is logistic regression model. The result will be the best feature selection approach by comparing the model performance.
+
+# Packages
+
+```{r}
+packages <- c("glmnet", "pROC", "caret")
+
+install_if_missing <- function(pkgs) {
+  missing <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
+  if (length(missing) > 0) {
+    cat("Installing:", paste(missing, collapse = ", "), "\n")
+    install.packages(missing)
+  }
+}
+
+install_if_missing(packages)
+```
+
+
+
+
+# Load data
+
+```{r}
+df <- read.csv2("processed.csv")
+df <- df[, -1]  # drops the first column (index)
+
+# check if data load was success
+dim(df)
+```
+
+
+# Split
+
+Splitting data to train, test to train the Logistic regression model and compare performance of feature selection approaches on test data.
+
+```{r}
+library(caret) #createDataPartition
+set.seed(67) # replicability
+index <- createDataPartition(df$target, p = 0.8, list = FALSE)
+train_data <- df[index, ]
+test_data  <- df[-index, ]
+```
+
+# Help functions
+
+We prepare functions that print out readable summary of model and prepares datasets with features for each feature selection approach.
+
+```{r}
+
+get_selected_features <- function(method_fit){
+  coefs <- coef(method_fit, s = "lambda.min")
+  selected <- rownames(coefs)[which(coefs != 0)]
+  selected <- selected[selected != "(Intercept)"]
+  selected
+}
+
+get_metrics <- function(tab){
+  data.frame(acc=sum(diag(tab)) / sum(tab),
+              prec=tab["1", "1"] / sum(tab["1", ]),
+              recall=tab["1", "1"] / sum(tab[, "1"]),
+              spec=tab["0", "0"] / sum(tab[, "0"]))
+}
+
+print_metrics <- function(tab, split_type){
+  cat(split_type, " Accuracy:", sum(diag(tab)) / sum(tab), "\n")
+  cat(split_type, " Precision:", tab["1", "1"] / sum(tab["1", ]), "\n")
+  cat(split_type, " Recall:", tab["1", "1"] / sum(tab[, "1"]), "\n")
+  cat(split_type, " Specificity:", tab["0", "0"] / sum(tab[, "0"]), "\n \n")
+}
+
+library(pROC) # roc curve
+
+print_model_stats <- function(model, train, test, treshold, name){
+  train_prob <- predict(model, type = "response")
+  train_pred <- ifelse(train_prob > treshold, 1, 0)
+  train_tab <- table(Predicted = train_pred, Actual = train$target)
+  
+  test_prob <- predict(model, newdata = test, type = "response")
+  test_pred <- ifelse(test_prob > treshold, 1, 0)
+  test_tab <- table(Predicted = test_pred, Actual = test$target)
+ 
+  # metrics
+  metrics <- get_metrics(test_tab)
+  #print_metrics(train_tab, "Train")
+  #print_metrics(test_tab, "Test")
+  
+  # confusion matrix
+  test_tab_df <- as.data.frame(test_tab)
+  
+  p <- ggplot(test_tab_df, aes(x = Actual, y = Predicted, fill = Freq)) +
+    geom_tile() +
+    geom_text(aes(label = Freq), size = 8, color = "white") +
+    scale_fill_gradient(low = "lightblue", high = "darkblue") +
+    theme_minimal() +
+    labs(title = name)
+  
+  print(p)
+  
+  # roc curve
+  roc_obj <- roc(test$target, test_prob)
+  plot(roc_obj, main = name,
+       col = "blue", lwd = 2,
+       print.auc = TRUE, auc.polygon = TRUE)
+  
+  
+  # confidence intervals
+  model_summary <- summary(model)$coefficients
+  coef_df <- data.frame(
+    feature = rownames(model_summary)[-1],
+    estimate = model_summary[-1, 1],
+    std_error = model_summary[-1, 2],
+    p_value = model_summary[-1, 4]
+  )
+  
+  coef_df$significant <- ifelse(coef_df$p_value < 0.05, "Yes", "No")
+  coef_df <- coef_df[order(coef_df$estimate), ]
+  coef_df$feature <- factor(coef_df$feature, levels = coef_df$feature)
+  
+  p1 <- ggplot(coef_df, aes(x = estimate, y = feature, color = significant)) +
+    geom_point(size = 3) +
+    geom_errorbarh(aes(xmin = estimate - 1.96 * std_error,
+                       xmax = estimate + 1.96 * std_error), height = 0.2) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+    scale_color_manual(values = c("No" = "grey", "Yes" = "blue")) +
+    theme_minimal() +
+    labs(title = name,
+         x = "Coefficient Estimate", y = "")
+  print(p1)
+  metrics
+}
+```
+
+
+# Lasso
+
+It is a regularization technique that adds an L1 penalty to the logistic regression cost function. The strength of the penalty is controlled by the lambda parameter. Higher lambda values result in more aggressive shrinkage and fewer features, while lower values retain more features at the cost of potential overfitting.
+
+
+```{r}
+library(glmnet) # lasso function
+
+# Prepare data as matrix (glmnet requires this)
+X <- as.matrix(train_data[, -which(names(train_data) == "target")])
+y <- train_data$target
+
+cv_fit <- cv.glmnet(X, y, family = "binomial", alpha = 1)
+
+selected <- get_selected_features(cv_fit)
+lasso_train <- train_data[,c("target", selected)]
+lasso_test <- test_data[,c("target", selected)]
+
+```
+
+
+
+# Elastic net
+Elastic Net combines both L1 (Lasso) and L2 (Ridge) penalties into a single cost function. This is the main advantage over pure Lasso, when features are highly correlated, Lasso tends to pick one and drop the rest randomly. Elastic Net handles this more gracefully by keeping groups of correlated features together while still eliminating truly irrelevant ones. For our experiment we will choose 3 different alphas. Even though our data are not multicolinear, lower alpha can have problem with the model not converging.
+
+
+```{r}
+
+enet_80 <- cv.glmnet(X, y, family = "binomial", alpha = 0.8)
+enet_75 <- cv.glmnet(X, y, family = "binomial", alpha = 0.75)
+enet_60 <- cv.glmnet(X, y, family = "binomial", alpha = 0.6)
+enet_50 <- cv.glmnet(X, y, family = "binomial", alpha = 0.5)
+enet_25 <- cv.glmnet(X, y, family = "binomial", alpha = 0.25)
+
+```
+
+
+
+
+```{r}
+compare <- data.frame(
+  model = c("Elastic Net 0.8", "Elastic Net 0.75", "Elastic Net 0.6", "Elastic Net 0.5", "Elastic Net 0.25"),
+  min_cv_error = c(
+    min(enet_80$cvm),
+    min(enet_75$cvm),
+    min(enet_60$cvm),
+    min(enet_50$cvm),
+    min(enet_25$cvm)
+  ),
+  features_selected = c(
+    sum(coef(enet_80, s = "lambda.min") != 0) - 1,
+    sum(coef(enet_75, s = "lambda.min") != 0) - 1,
+    sum(coef(enet_60, s = "lambda.min") != 0) - 1,
+    sum(coef(enet_50, s = "lambda.min") != 0) - 1,
+    sum(coef(enet_25, s = "lambda.min") != 0) - 1
+  )
+)
+
+print(compare)
+```
+
+```{r}
+
+selected <- get_selected_features(enet_80)
+enet_80_train <- train_data[,c("target", selected)]
+enet_80_test <- test_data[,c("target", selected)]
+
+selected <- get_selected_features(enet_75)
+enet_75_train <- train_data[,c("target", selected)]
+enet_75_test <- test_data[,c("target", selected)]
+
+selected <- get_selected_features(enet_60)
+enet_60_train <- train_data[,c("target", selected)]
+enet_60_test <- test_data[,c("target", selected)]
+
+selected <- get_selected_features(enet_50)
+enet_50_train <- train_data[,c("target", selected)]
+enet_50_test <- test_data[,c("target", selected)]
+
+selected <- get_selected_features(enet_25)
+enet_25_train <- train_data[,c("target", selected)]
+enet_25_test <- test_data[,c("target", selected)]
+```
+
+
+
+# Mixed selection
+
+Mixed (stepwise) selection combines forward and backward selection into a single iterative process. Unlike Lasso and Elastic Net, it doesn't modify the cost function, instead it uses AIC to compare models at each step. Lower AIC means a better balance between fit and complexity.
+
+
+```{r}
+null_model <- glm(target ~ 1, data = train_data, family = "binomial")
+full_model <- glm(target ~ ., data = train_data, family = "binomial")
+
+step_model <- step(null_model, 
+                   scope = list(lower = null_model, upper = full_model),
+                   direction = "both",
+                   trace = 1)
+
+selected_features <- names(coef(step_model))[-1]
+step_train <- train_data[, c("target", selected_features)]
+step_test <- test_data[, c("target", selected_features)]
+```
+
+# Comparison
+
+
+```{r}
+
+datasets <- list(
+  lasso   = list(train = lasso_train,   test = lasso_test),
+  enet_80 = list(train = enet_80_train, test = enet_80_test),
+  enet_75 = list(train = enet_75_train, test = enet_75_test),
+  enet_60 = list(train = enet_60_train, test = enet_60_test),
+  enet_50 = list(train = enet_50_train, test = enet_50_test),
+  enet_25 = list(train = enet_25_train, test = enet_25_test),
+  mixed   = list(train = step_train,    test = step_test)
+)
+
+models <- lapply(datasets, function(d) {
+  glm(target ~ ., data = d$train, family = "binomial")
+})
+
+best_acc <- 0
+best_model <- NULL
+best_name <- NULL
+
+for (name in names(datasets)) {
+  d <- datasets[[name]]
+  model <- models[[name]]
+  metrics <- print_model_stats(model, d$train, d$test, 0.5, name)
+  
+  if (metrics$acc > best_acc) {
+    best_acc <- metrics$acc
+    best_model <- model
+    best_name <- name
+  }
+}
+
+cat("Best model:", best_name, "with accuracy:", round(best_acc, 4), "\n")
+```
+
+# Conclusion
+
+After using all 3 feature selections methods and comparing them with each other for Logistic regression model it didn't outperform our feature selection done by hand during Logistic regression modeling.
+
+
+
