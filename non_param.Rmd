@@ -3,46 +3,41 @@ title: "Nonparametric_Models"
 author: "Milan Mikuláš, Marek Vatrt"
 date: "`r Sys.Date()`"
 output: html_document
-editor_options: 
-  markdown: 
-    wrap: 72
 ---
 
 # Goal
 
-In this section of our project, our goal is to build 3 non-parametric
-models, analyze the results and compare them with each other. To achieve
-the best results, we will firstly use default settings for creating the
-models and then apply hyperparameter tuning to get the best parameters
-(parameters with which the model has the highest accuracy on testing
-data).
+In this section of our project, our goal is to build 3 non-parametric models, analyze the results and compare them with each other. To achieve the best results, we will firstly use default settings for creating the models and then apply hyperparameter tuning to get the best parameters (parameters with which the model has the highest accuracy on testing data).
+
+Hyperparameter tuning will be conducted via Random search. This is because using Grid search is very computationaly expensive (mainly for Random Forest and k-NN), and finding the best hyperparameters is exhaustive. By using random search, we might not find the one ultimately best combination of hyperparameter, but we will create enough combinations to explore and get close to the best combination.
+
+Since out dataset is balanced (same number of 0s and 1s in the target variable), we will be mainly focusing on using the accuracy as the metric of performance. If the classes were imbalanced, accuracy could be misleading, and recall, precision, or F1-score would be more important. However, we will also discuss the other metrics in our analysis of outcomes.
 
 # Loading libraries and data
-
 ```{r, warning=FALSE}
-library(tidyverse)
-library(tidymodels)
-
-#vif values
-library(car)
-
-#Decision tree libs
-library(rpart)
-library(rpart.plot)
-library(caret)
-
-#random forest
-library(randomForest)
-
-#k-nn
-library(class)
-
-#metrics lib
-library(Metrics)
-#https://cran.r-project.org/web/packages/Metrics/Metrics.pdf
-
-#clear env variables
+#clear env variables first
 rm(list = ls())
+
+install_if <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+  library(pkg, character.only = TRUE)
+}
+
+install_if("tidyverse")
+install_if("tidymodels")
+install_if("ggplot2")
+install_if("scales")
+install_if("class")
+install_if("kknn")
+install_if("car")
+install_if("rpart")
+install_if("rpart.plot")
+install_if("caret")
+install_if("randomForest")
+install_if("Metrics")
+install_if("knitr")
 ```
 
 ```{r}
@@ -54,18 +49,24 @@ df <- df[2:ncol(df)]
 train_margin=0.8
 
 set.seed(67)
-train_index <- sample(1:nrow(df), train_margin * nrow(df))
+#same ratio of outcomes in test/train
+train_index <- createDataPartition(df$target, p = train_margin, list = FALSE)
 
 train <- df[train_index, ]
-test  <- df[-train_index, ]
+test <- df[-train_index, ]
+
+#checking the split balance
+cat("Distribution of target in train\n")
+prop.table(table(train$target))
+cat("Distribution of target in test\n")
+prop.table(table(test$target))
 
 #converting to factor, so the models wont think its for regression
 train$target <- as.factor(train$target)
 test$target <- as.factor(test$target)
 ```
 
-Helping function for printing out metrics from our models
-
+Helping function for printing out metrics from our models.
 ```{r}
 print_extra_scores <- function(predictions, actual, positive_class = "1") {
   predictions <- factor(predictions, levels = levels(actual))
@@ -90,46 +91,31 @@ print_extra_scores <- function(predictions, actual, positive_class = "1") {
 }
 ```
 
-#Decision tree First non-parametric model we chose is the decision tree.
-This choice was made because of the tree's simplicity and
-interpretability (although our dataset contains \~55 features, so the
-interpretability might be questionable, depending on how the tree will
-be created). Since decision trees can be used for regression as well as
-classification tasks, we can use it for our task of classifying win/loss
-of a team.
+#Decision tree 
+First non-parametric model we chose is the Decision Tree (DT). This choice was made because of the tree's simplicity and interpretability. Since decision trees can be used for regression as well as classification tasks, we can use it for our task of classifying win/loss of a team.
 
 ## Statistical assumptions
+Statistical assumptions are taken from the 5th module of OZNAL. 
+### Independence 
+This dataset consists of random matches from the game League of Legends. Each of the games is independent of eachother, each game is a new one. There are no rematch mechanics. 
+### Multicolinearity 
+Decision trees can handle multicolinearity, however, features with high multicollinearity (tested using VIF) were removed from the dataset - as per advice we got from a consultation. 
+### Outliers 
+Robust to outliers. At frist, we did not plan on removing outliers due to the tree being robust to them, however upon consulting with our supervisor, we have decided to remove them in preprocessing. 
+### Sample size 
+May overfit on small datasets, which could become a problem, since our dataset only has ~1k observations. We will test for overfit on our DT models.
+### Normality, Feature scaling, Homoscedasticity, Linear relationship 
+Not required.
 
-Statistical assumptions are taken from the 5th module. \### Independence
-This dataset consists of random matches from the game League of Legends.
-Each of the games is independent of eachother, this is because each game
-is new. There are no rematch mechanics. \### Multicolinearity Decision
-trees can handle multicolinearity, however, features with high
-multicollinearity (tested using VIF) were removed from the dataset - as
-per advice we got from a consultation. \### Outliers Robust to outliers.
-At frist, we did not plan on removing outliers due to the tree being
-robust to them, however upon consulting with our supervisor, we have
-decided to remove them in preprocessing. \### Sample size May overfit on
-small datasets (that is what we want to test) \### Normality, Feature
-scaling, Homoscedasticity, Linear relationship Not required.
-
-###Conclusion to statistical assumptions Our dataset satisfies all the
-data assumptions of a decision tree. We can now move on to the
-implementation of the Decision Tree model.
+###Conclusion to statistical assumptions 
+Our dataset satisfies all the data assumptions of a decision tree. We can now move on to the implementation of the Decision Tree model.
 
 ## Implementation
 
-Sources:
-<https://www.rdocumentation.org/packages/rpart/versions/4.1.24/topics/rpart>
-<https://www.rdocumentation.org/packages/rpart.plot/versions/3.1.3/topics/rpart.plot>
-<https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/predict>
+Sources: \n
+<https://www.rdocumentation.org/packages/rpart/versions/4.1.24/topics/rpart> <https://www.rdocumentation.org/packages/rpart.plot/versions/3.1.3/topics/rpart.plot> <https://www.rdocumentation.org/packages/stats/versions/3.6.2/topics/predict>
 
-For the implementation of the decision tree, we will be using the
-function rpart(). In this section, we will simply use the default
-parameters of rpart. We want to see how the default model compares to
-the hyperparameter-tuned model. Also, since decision trees can use Gini
-impurity and Entropy scores as the splitting criteria, we will also
-compare the accuracy of trees built with Gini and Entropy.
+For the implementation of the decision tree, we will be using the function rpart(). In this section, we will simply use the default parameters of rpart. We want to see how the default model compares to the hyperparameter-tuned model. Also, since decision trees can use Gini impurity and Entropy scores as the splitting criteria, we will also compare the metrics of trees built with Gini and Entropy.
 
 ```{r}
 #using lib rpart, we create trees for testing the gini inpurity and entropy
@@ -179,37 +165,14 @@ cat("Accuracy on training dataset (Entropy)")
 print_extra_scores(predictions_entropy, train$target)
 
 ```
+As we can see, the decision tree, without even tuning its hyperparameters, got scores of 97.76% for accuracy. The score is the same for both Gini and Entropy. All the other metrics are also the same for both trees. This is because both of the trees grew in the same way, to only a depth of 2. The lack of depth is caused by a very strong predictor. *diff_champion_experience*. 
 
-As we can see, the decision tree, without even tuning its
-hyperparameters, got scores of 95% for accuracy. The more accurate out
-of the Gini Inpurity and Entropy methods is the Gini Impurity. For that
-reason, we will be using Gini Impurity scoring for tuning the
-hyperparameters.
+Furthermore we can see that all the metrics are actually a bit lower on the training dataset, except for precision. This is good, because that means that there is no overfit on the training data.
 
-Another fact to mention is that the decision tree is not overfitted.
-Actually, for gini impurity, the accuracy score falls behind on the
-training dataset by about 0.3%. On the contrary, Entropy score rises on
-the training dataset. Both of these scores, however, are very similar to
-those of the testing dataset scores. From this we can conclude that the
-decision trees are not overfitted.
+We can also see that the scores for Recall are excellent (99.09%), this means that DTs are very good for catching the true positive outcomes (team's win), rathen than their loss.
 
-Since we have decided on the scoring metric we will be using, we can now
-move on to tuning the decision tree's hyperparameters. The rpart()
-function for creating the decision trees does not have built in
-hyperparameters unfortunately. However, we can use rpart.control() to
-modify the hyperparameters. The creation and training of decision trees
-is not as computanionaly expensive as creating a random forest and
-tuning it's hyperparameters, so for the DT, we have decided to use grid
-search to search for the best hyperparameters.
-
-The probability of finding a better decision tree is quite slim however.
-This is due to the fact that the basic rpart() function has already
-found a tree that has a depth of only 3.
-
-Trying to fit trees to a dataset without the most powerful features. We
-got these features after manually fitting the rpart() function and
-removing features one at a time.
-
+###Cutting out diff_champion_experience
+Since the dataset contains such an influential feature (diff_champion_experience), we have decided to remove it and try to grow the trees again. This allows us to explore the feature relationships within the DT further.
 ```{r}
 #diff_champion_experience is a dominating feature, which splits and finished the decision tree at depth=2
 #the accuracy is very high even with only 1 feature deciding the outcome, however, for the sake of exploring relationships between features, we have decided to remove it and try again
@@ -242,7 +205,6 @@ rpart.plot(decision_tree_model_entropy_exp_cut,
 predictions_gini <- predict(decision_tree_model_gini_exp_cut, exp_cut_test, type = "class")
 predictions_entropy <- predict(decision_tree_model_entropy_exp_cut, exp_cut_test, type = "class")
 
-#accuracy scores on test dataset for gini and entropy
 cat("Accuracy on testing dataset (Gini)")
 print_extra_scores(predictions_gini, exp_cut_test$target)
 cat("Accuracy on testing dataset (Entropy)")
@@ -256,105 +218,114 @@ print_extra_scores(predictions_gini, exp_cut_train$target)
 cat("Accuracy on training dataset (Entropy)")
 print_extra_scores(predictions_entropy, exp_cut_train$target)
 ```
-
-As we can see, removing the most influential feature from the dataset
-caused the decision tree to lose a lot of accuracy. What we can also
-notice is the fact that the models are starting to overfit more on the
-data. There is a more significant difference between testing and
-training accuracies (\~4% for Gini and \~5.5% for Entropy).
-
-Since the original DT already has an accuracy score of 97% and depth of
-only 2, it is highly unlike that we will find a better DT from
-hyperparameter tuning. Still, it is worth to try all combinations, maybe
-we will find a more suitable tree that will have more features.
+As we can see, removing the most influential feature from the dataset caused the decision tree to lose a lot of points, not just for accuracy, but for all of the other metrics as well. Accuracy alone has dropped almost 14% (for Gini). What we can also see is signifficant overfit happening (accuracy difference on train/test is 7.5% for gini and 7.3% for entropy). This signals the fact we have brought up in our statistical assumptions section. Without the most influential variable, basic DT is prone to overfit on our data.
 
 ## Hyperparameter tuning
+Since the original DT already has an accuracy score of 97.76% and depth of only 2, it is highly unlike that we will find a better DT from hyperparameter tuning. Still, it is worth to try all combinations, maybe we will find a more suitable tree that will have more features.
+
+The rpart() function for creating the decision trees does not have built in hyperparameters unfortunately. However, we can use rpart.control() to modify the hyperparameters. The creation and training of decision trees is not as computanionaly expensive as creating a Random forest (RF) or k-NN and tuning their hyperparameters, so we will use more iterations than for RF and k-NN.
 
 ```{r}
+# number of iterations 
+dt_iterations <- 500
 
-dt_iterations <- 50
-
+# creating a grid for random search
+#we wanted to include cp as well but later found out rpart has a built in cptable for the best cp value
 dt_grid <- data.frame(
-  cp = sample(
-    c(0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.02, 0.05, 0.1),
-    dt_iterations,
-    replace = TRUE
-  ),
   maxdepth = sample(2:30, dt_iterations, replace = TRUE),
   minsplit = sample(2:60, dt_iterations, replace = TRUE)
 )
 
+# minbucket depends on minsplit, so we have to calculate it sepparately
 dt_grid$minbucket <- sapply(
   dt_grid$minsplit,
   function(x) sample(1:max(1, floor(x / 2)), 1)
 )
 
+# keep only unique combinations
 dt_grid <- unique(dt_grid)
 
+# saving the best cv error, params, cp, and all results
 best_xerror <- Inf
 best_params <- NULL
 best_cp_for_pruning <- NULL
-best_dt_model <- NULL
 results <- data.frame()
 
 for (i in 1:nrow(dt_grid)) {
-
+  
+  # grow a large enough tree using very small cp
   dt_model <- rpart(
     target ~ .,
     data = train,
     method = "class",
     parms = list(split = "gini"),
     control = rpart.control(
-      cp = dt_grid$cp[i],
+      #we set the cp to very low so that we can find the best pruning cp
+      cp = 0.000001,
       maxdepth = dt_grid$maxdepth[i],
       minsplit = dt_grid$minsplit[i],
       minbucket = dt_grid$minbucket[i],
       xval = 5
     )
   )
-
+  
+  # choose best internal pruning cp from cptable
   model_cptable <- dt_model$cptable
-
   best_row <- which.min(model_cptable[, "xerror"])
-
+  
   model_best_xerror <- model_cptable[best_row, "xerror"]
   model_best_cp <- model_cptable[best_row, "CP"]
-
+  
   results <- rbind(
     results,
     data.frame(
-      cp = dt_grid$cp[i],
+      pruning_cp = model_best_cp,
       maxdepth = dt_grid$maxdepth[i],
       minsplit = dt_grid$minsplit[i],
       minbucket = dt_grid$minbucket[i],
-      best_pruning_cp = model_best_cp,
       xerror = model_best_xerror
     )
   )
-
+  
+  #save the best parameters, cp and error for creating the best tree
   if (model_best_xerror < best_xerror) {
     best_xerror <- model_best_xerror
     best_params <- dt_grid[i, ]
     best_cp_for_pruning <- model_best_cp
-    best_dt_model <- dt_model
   }
 }
 
 results <- results[order(results$xerror, decreasing = FALSE), ]
 
-pruned_best_dt_model <- rpart::prune(
-  best_dt_model,
+# train the best tree again
+best_dt_model_unpruned <- rpart(
+  target ~ .,
+  data = train,
+  method = "class",
+  parms = list(split = "gini"),
+  control = rpart.control(
+    cp = 0.000001,
+    maxdepth = best_params$maxdepth,
+    minsplit = best_params$minsplit,
+    minbucket = best_params$minbucket,
+    xval = 5
+  )
+)
+
+# prune final tree using internal cp
+best_dt_model <- prune(
+  best_dt_model_unpruned,
   cp = best_cp_for_pruning
 )
 
 test_predictions <- predict(
-  pruned_best_dt_model,
+  best_dt_model,
   newdata = test,
   type = "class"
 )
 
 train_predictions <- predict(
-  pruned_best_dt_model,
+  best_dt_model,
   newdata = train,
   type = "class"
 )
@@ -362,23 +333,25 @@ train_predictions <- predict(
 test_accuracy <- mean(test_predictions == test$target)
 train_accuracy <- mean(train_predictions == train$target)
 
-#for final eval
+# for final eval
 tuned_dt_accuracy <- test_accuracy
 
 print(best_params)
 
 cat("Number of random combinations tested:", nrow(dt_grid), "\n")
 cat("Best internal CV xerror:", round(best_xerror, 4), "\n")
-cat("Best original cp:", best_params$cp, "\n")
 cat("Best pruning cp:", best_cp_for_pruning, "\n")
 cat("Best maxdepth:", best_params$maxdepth, "\n")
 cat("Best minsplit:", best_params$minsplit, "\n")
 cat("Best minbucket:", best_params$minbucket, "\n\n")
+
 cat("Training metrics:")
 print_extra_scores(train_predictions, train$target)
+
 cat("Testing metrics:")
 print_extra_scores(test_predictions, test$target)
 ```
+After almost 500 random combinations of hyperparameters, we actually have not found a better, but a worse tree. As we can see, this tree decreased in all metrics on testing dataset by around 2%. This is unexpected, because we thought, at the least, we would find the same DT as the base DT. However, that did not happen. This could be because our random search did not find the best best combinations of hyperparameters. As we have mentioned at the beginning, this is always the risk when using random search. So, the default DT still remains the most accurate DT.
 
 ```{r}
 rpart.plot(best_dt_model,
@@ -386,80 +359,76 @@ rpart.plot(best_dt_model,
 rpart.plot(decision_tree_model_gini,
            main="Gini Inpurity - default model")
 ```
+In this comparison of hyperparameter-tuned and default DT models, we can clearly see how the hyperparameter model tried to fit the training data more and thats why the accuracy on testing dataset suffered.
 
-As we have suspected, the best model, even with tweaking the
-hyperparameters, is still the one created using default rpart()
-configuration. The model with tuned hyperparameters achieved better
-performance on the training dataset, however, the accuracy score for the
-testing dataset remains the same.
-
+Next, we will show how the choices of hyperparameters of the DT impacted the CV error.
 ```{r}
-results %>%
-  group_by(maxdepth) %>%
-  summarise(
-    best_xerror = min(xerror),
-    mean_xerror = mean(xerror),
-    .groups = "drop"
-  ) %>%
-  ggplot(aes(x = maxdepth, y = best_xerror)) +
-  geom_line() +
-  geom_point(size = 2) +
-  labs(
-    title = "Decision Tree Tuning: Best CV Error by Tree Depth",
-    x = "Max Depth",
-    y = "Best CV Error"
-  )
+plot_dt_param <- function(parameter) {
+  ggplot(results, aes(x = .data[[parameter]], y = xerror)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(se = FALSE) +
+    labs(
+      title = paste("Decision Tree Tuning:", parameter, "vs CV Error"),
+      x = parameter,
+      y = "Cross-validation error"
+    ) +
+    theme_minimal()
+}
+
+plot_dt_param("pruning_cp")
+plot_dt_param("maxdepth")
+plot_dt_param("minsplit")
+plot_dt_param("minbucket")
 ```
+As we can see from the graphs, there are only minor changes in CV error for all of the hyperparameters. Due to the dataset possesing such an influential variable, the changes of hyperparameters do not have enough power to change the outcome of the classifications. Due to this reason, the CV error does not present a signifficant change at any points. It does indeed fluctuate, however, by only a few decimal thousands.
+
+What we would like to show is the importance of each variable in the decision tree. For the visualization, we chose the base DT, since it had the best accuracy. It is obvious that the biggest importance score will belong to *diff_champion_experience*, but we can also visualize the other important variables.
+```{r}
+dt_importance <- data.frame(
+  feature = names(decision_tree_model_gini$variable.importance),
+  importance = as.numeric(decision_tree_model_gini$variable.importance)
+)
+
+ggplot(dt_importance, aes(x = reorder(feature, importance), y = importance)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Decision Tree Feature Importance",
+    x = "Feature",
+    y = "Importance"
+  ) +
+  theme_minimal()
+```
+diff_champion experience is clearly the winner, with a big gap. The gap of importance becomes smaller between the other variables.
+
+##Hyperparameter tuning conclusion
+Unfortunately, we have not managed to find a better combination of hyperparameter than that of the default DT model. The best DT we got from hyperparameter tuning was actually worse than the default DT. This means that the default DT already found the most optimized partitioning of data.
 
 # Random forest
-
-Building upon the tree models, due to the unexpectedly high accuracy
-score of decision tree from both the test and train datasets, we have
-decided to choose random forest to see wether we could increase the
-accuracy further.
+Building upon the tree models, due to the unexpectedly high accuracy score of decision tree from both the test and train datasets, we have decided to choose random forest to see wether we could increase the accuracy further. Since RF uses multiple decision trees to formulate an answer, this combination of trees, with added randomness could provide better results.
 
 ## Statistical assumptions
-
-Statistical assumptions are taken from the 5th module. \### Independence
-This dataset consists of random matches from the game League of Legends.
-Each of the games is independent of eachother, this is because each game
-is new. There are no rematch mechanics. \### Multicolinearity Although
-random forest can handle multicolinearity, it is stated that colinearity
-could affect feature importance. Due to this reason, we have decided to
-get rid of features that have too big of multicolinarity between each
-other.
-
-Since we have already cut the features with above 0.8 value on the
-correlation matrix during EDA and preprocessing, this time we will focus
-on the individual VIF values of the features. We will continue to remove
-the feature with the biggest VIF value until the maximum VIF value is
-below 10.
-
-Sources:
-<https://www.rdocumentation.org/packages/regclass/versions/1.6/topics/VIF>
-
-We ended up only removing 2 features, however, the first feature we
-removed had a VIF score of over 4 billion, which is an astronomically
-high multicolinearity score. The second feature was over 100 million.
-From the scores alone, we can asses that it was a good decision to
-remove them from the dataset before creating a random forest model.
-
-### Outliers
-
-Robust to outliers \### Sample size Performs better with a larger
-dataset. Our dataset is not very large (\~1200 rows), however, due to
-the accuracy of the decision tree we tested, we believe that the random
-forest will still perform well. \### Normality, Feature scaling,
-Homoscedasticity, Linear relationship Not required
+Statistical assumptions are taken from the 5th module. 
+### Independence 
+This dataset consists of random matches from the game League of Legends. Each of the games is independent of eachother, this is because each game is new. There are no rematch mechanics. 
+### Multicolinearity 
+RF can get troublesome for RF, however, features with high multicollinearity (tested using VIF) were removed from the dataset - as per advice we got from a consultation. 
+### Outliers 
+Robust to outliers. At frist, we did not plan on removing outliers due to the forest being robust to them, however upon consulting with our supervisor, we have decided to remove them in preprocessing. 
+### Sample size 
+Performs better with a larger dataset. Our dataset is not very large, however, due to the accuracy of the decision tree we tested, we believe that the random forest will still perform well. 
+### Normality, Feature scaling, Homoscedasticity, Linear relationship 
+Not required
 
 ## Implementation
 
-### No tuning, default
-
+AT first, similarly to DT, we will use default parameter to create a random forest from our data.
 ```{r}
+set.seed(67)
 random_forest_model <- randomForest(
   target ~ .,
   data = train,
+  #replace is TRUE, because we want to use bootstrapping and OOB error to evaluate the model
   replace = TRUE,
   importance = TRUE
 )
@@ -472,38 +441,25 @@ rf_predictions <- predict(
   type = "class"
 )
 
-table(
-  Predicted = rf_predictions,
-  Actual = test$target
+rf_predictions_train <- predict(
+  random_forest_model,
+  newdata = train,
+  type = "class"
 )
 
+#for later evaluation
 rf_accuracy <- mean(rf_predictions == test$target)
 
 cat("Random Forest testing metrics")
 print_extra_scores(rf_predictions, test$target)
+
+cat("Random Forest training metrics")
+print_extra_scores(rf_predictions_train, train$target)
 ```
+As we can see. Just by using the default values (+ setting the replacement to TRUE), we got up to 97.31% accuracy. This score is outstanding, but we are wondering if we can do even better by searching through multiple combinations of hyperparameters to find a better result. Just like for the DTs, we will be utilizing random search to find the best parameters.
+Just like the DT, RF is also better at categorizing the win (target=1) of a team.
 
-As we can see. Just by using the default values (+ setting the
-replacement and importance to TRUE), we got up to 95.34% accuracy. This
-score is outstanding, but we are wondering if we can do even better by
-searching through multiple combinations of hyperparameters to find a
-better result. We have decided to use random search for hyperparameters.
-We could also use grid search, however, finding the best combinations of
-hyperparameters with grid search could become very exhaustive,
-especially with the \~55 features we have. Random search could find a
-better combination of hyperparameters much faster because it does not
-waste time trying every combination that exists.
-
-At first, we tried using the train() function, however, the only
-hyperparameter we are able to tweak is the **mtry** parameter. Mtry is
-important, but this kind of random testing only provided minor
-improvements (around 0.5% accuracy). We are wondering if it is possible
-to go beyond that. In this instance, we will not be using a built-in
-function, instead we will try to do our own version of a randomized
-search, where we try to tweak all the numeric parameters of the random
-forest - mtree, mtry, nodesize, maxnodes using the randomForest library
-and cross validation.
-
+When we look at the trainig metrics, we can also see that the model is perfectly overfit on the training data.
 ## Hyperparameter tuning
 
 ```{r}
@@ -512,22 +468,26 @@ tune_random_forest <- function(
   test,
   target_col = "target",
   seed = 67,
-  rf_iterations = 50
+  #less than DT because of long computational time
+  rf_iterations = 300
 ) {
 
   set.seed(seed)
-
+  
+  #1 to all features
   predictor_count <- ncol(train) - 1
 
   random_grid <- data.frame(
     mtry = sample(1:predictor_count, rf_iterations, replace = TRUE),
-    ntree = sample(seq(100, 1000, by = 50), rf_iterations, replace = TRUE),
-    nodesize = sample(20:100, rf_iterations, replace = TRUE),
-    maxnodes = sample(seq(10, 60, by = 2), rf_iterations, replace = TRUE)
+    ntree = sample(seq(100, 800, by = 25), rf_iterations, replace = TRUE),
+    #starting from 5 to avoid very detailed trees
+    nodesize = sample(5:80, rf_iterations, replace = TRUE),
+    maxnodes = sample(5:40, rf_iterations, replace = TRUE)
   )
-
+  
   random_grid <- unique(random_grid)
 
+  #saving the best oob_accuracy to determine the best model
   best_oob_accuracy <- 0
   best_params <- NULL
   results <- data.frame()
@@ -544,7 +504,8 @@ tune_random_forest <- function(
       replace = TRUE,
       importance = TRUE
     )
-
+    
+    #calculating the oob accuracy from error
     final_oob_error <- rf_model$err.rate[rf_model$ntree, "OOB"]
     oob_accuracy <- 1 - final_oob_error
 
@@ -560,6 +521,7 @@ tune_random_forest <- function(
       )
     )
 
+    #if the oob accuracy of the current model is better than the best, we save current params
     if (oob_accuracy > best_oob_accuracy) {
       best_oob_accuracy <- oob_accuracy
       best_params <- random_grid[i, ]
@@ -568,6 +530,7 @@ tune_random_forest <- function(
 
   results <- results[order(results$oob_accuracy, decreasing = TRUE), ]
 
+  #we set the same seed to get repeatable results
   set.seed(seed)
 
   final_model <- randomForest(
@@ -581,12 +544,15 @@ tune_random_forest <- function(
     importance = TRUE
   )
 
+  #testing on testing and training datasets
   train_predictions <- predict(final_model, newdata = train)
   test_predictions <- predict(final_model, newdata = test)
 
+  #for final evaluation
   train_accuracy <- mean(train_predictions == train[[target_col]])
   test_accuracy <- mean(test_predictions == test[[target_col]])
 
+  #getting the best oob accuracy from the best model (the best params)
   final_oob_error <- final_model$err.rate[final_model$ntree, "OOB"]
   final_oob_accuracy <- 1 - final_oob_error
 
@@ -614,16 +580,11 @@ tune_random_forest <- function(
 }
 ```
 
-The best outcome we got from this hyperparameter tuning after we tried
-changing all the randomised ranges of the hyperparameters was 96.99%.
-That is an upgrade of 1.1% compared to the train() function. What we
-have not done yet is checking for overfitting. We will now test the best
-model on both the train dataset and the test dataset and compare their
-accuracy.
-
 ```{r}
 rf_tuned <- tune_random_forest(train, test)
 ```
+The metrics of the best hyperparameter-tuned RF are actually the exact same as the ones on the default RF. Tree algorithms seem to perform very well on our dataset. What is more, the default version are already the best versions of DT and RF. 
+Even though the accuracy has not increase, we at least managed to lower the overfit by 0.5%.
 
 ```{r}
 plot_rf_param <- function(parameter) {
@@ -637,7 +598,6 @@ plot_rf_param <- function(parameter) {
     ) +
     scale_y_continuous(labels = scales::percent)
 }
-
 ```
 
 ```{r}
@@ -646,22 +606,15 @@ plot_rf_param("ntree")
 plot_rf_param("nodesize")
 plot_rf_param("maxnodes")
 ```
+The most interesting thing we can see from the graphs is the fact that mtry had a significant impact on the OOB accuracy of a RF. We can see that at value of around 10, the accuracy starts to stabilize. When we take a look at the other hyperparameters, it is a similar story as the hyperparameters of DT. The other hyperparameters are not as influential as mtry.
 
 ## Hyperparameter tuning conclusion
-
-The most succesful model came from our own implementation of random
-search with an accuracy of 96.99%. Even though it might not seem like a
-substanstial difference, the "baseline" for this model was already very
-high at 95.34%.
+The most succesful model came from hyperparameter tuning had the same accuracy as the base model of RF. However, with hyperparameter search, we have managed to get rid of the overfit on our training data.
 
 ### Feature importance
+Using varImpPlot, a helping function for the library randomForest, we can visualize the importance of individual features via a dot chart. The plot shows both the importance for mean decrease in accuracy and gini.
 
-Now that we have found the best model via hyperparameter tuning, we will
-look into what are the most important, or valuable features for
-splitting the trees.
-
-Sources:
-<https://www.rdocumentation.org/packages/randomForest/versions/4.7-1.2/topics/varImpPlot>
+Sources: <https://www.rdocumentation.org/packages/randomForest/versions/4.7-1.2/topics/varImpPlot>
 
 ```{r, fig.width=16, fig.height=8}
 varImpPlot(
@@ -671,103 +624,60 @@ varImpPlot(
 )
 ```
 
-As we can see, the same feature that dominated the decision tree
-dominated again in the random forest.
+As we can see, the same feature that dominated the decision tree dominated again in the random forest.
 
-diff_inhibitor_takedowns, without being a data leakage, is the most
-significant and influential variable for predicting the outcome of the
-match. It has the highest MeanDecreaseAccuracy, meaning that randomly
-permuting this feature causes the largest drop in classification
-accuracy. It also has the highest MeanDecreseGini, which means that it
-contributes the most to the reduction of gini impurity at a split.
+diff_champion_experience, without being a data leakage, is the most significant and influential variable for predicting the outcome of the match. It has the highest MeanDecreaseAccuracy, meaning that randomly permuting this feature causes the largest drop in classification accuracy. It also has the highest MeanDecreseGini, which means that it contributes the most to the reduction of gini impurity at a split.
 
-We debated wether to remove it, simply because it carries a lot of
-influencer over the outcome. However, as the decision tree has proved,
-even if we were to remove it, other features can still classify the
-outcome of the matches with a great accuracy. In the end, we have
-decided to keep it, because it is a part of the dataset and it is not
-considered a data leakage.
+We debated wether to remove it, simply because it carries a lot of influence over the outcome.However, n the end, we have decided to keep it, because it is a part of the dataset and it is not considered a data leakage.
 
-#k-NN As the final non-parametric model we have chosen k-NN. At first we
-wanted to use XGBoost, because we thought that the decision tree and
-random forest would not be as powerful, so we wanted to use boosting to
-combine the "weaker" trees into a better one. However, the accuracy of
-the tree models turned out to be excellent, that is why we decided to
-move on from tree algorithms.
+#k-NN 
+As the final non-parametric model we have chosen k-NN. At first we wanted to use XGBoost, because we thought that the decision tree and random forest would not be as powerful, so we wanted to use boosting to combine the "weaker" trees into a better one. However, the accuracy of the tree models turned out to be excellent, that is why we decided to move on from tree algorithms. We wanted to see if other models could classify our data just as well, if not better.
 
-k-NN is simple, and unlike tree algorithms, that split the feature space
-based on conditions, k-NN uses the similarity of data to make decisions.
-We wanted to choose it due to the use of a different technique. However,
-k-NN has a defining problem, sometimes called the "curse of
-dimensionality". What this means is that if a dataset contains too many
-features, the distances between individual features can become similar,
-which can cause the model to predict unreliably. This is a big problem
-for our dataset, which contains \~55 features.
+k-NN is simple, and unlike tree algorithms, that split the feature space based on conditions, k-NN uses the similarity of data to make decisions. We wanted to choose it due to the use of a different technique. However, k-NN has a defining problem, sometimes called the "curse of dimensionality". What this means is that if a dataset contains too many features, the distances between individual features can become similar, which can cause the model to predict unreliably. This could be a problem for our dataset, since we only have about 1000 observations and 35 features.
 
-To counter this problem, we are planning on implementing a simple
-feature selection, to select the best 5-15 features. We plan to do this
-using the most random forest's feature importance. Using the top 15
-features, we will then observe how the accuracy of k-NN
-increases/decreases when we try using 14,13,12,..,5 features.
+To counter this problem, we are planning on implementing PCA to reduce the dimensionality of our data. Similar to the workflow of DT and RF, first, we will use the default model of k-NN, then hyperparameter-boosted k-NN and then PCA-reduced k-NN.
 
-What we found from using the tree models is the fact that our dataset
-contains a small set of features, which carry the most influence over
-the outcome of the prediction. We want to see exactly how much the
-number of features changes the accuracy and if a different algorithm can
-bring even more accuracy to our predictions.
+Also, k-NN is what is called a "lazy model", it does not create a model and stores it for use, like for example DT. Instead, k-NN mainly stores the training data points. When a new unseen sample needs to be classified, the algorithm compares it to the stored training points, finds the k nearest neighbors, and assigns the class based on the majority class among those neighbors.
 
 ## Statistical assumptions
 
-Sources for statistical assumptions of k-NN: \n
-<https://medium.com/analytics-vidhya/k-nearest-neighbors-algorithm-7952234c69a4>
-\n
+Sources for statistical assumptions of k-NN: \n <https://medium.com/analytics-vidhya/k-nearest-neighbors-algorithm-7952234c69a4> \n
 
 ### Independence
+This dataset consists of random matches from the game League of Legends. Each of the games is independent of eachother, this is because each game is new. There are no rematch mechanics. 
+### Multicolinearity 
+k-NN cannot handle multicollinearity well, however, features with high multicollinearity (tested using VIF) were removed from the dataset - as per advice we got from a consultation. 
+### Outliers 
+Sensitive to outliers, we removed them in preprocessing. 
+### Sample size 
+Computationally expensive on large datasets, could overfit on small dataset. 
+### Normality, Homoscedasticity, Linear relationship 
+Not required 
+### Feature scaling 
+Due to k-NN being a distance-based method of classification, feature scaling is required. We will scale the data in the kknn function.
 
-This dataset consists of random matches from the game League of Legends.
-Each of the games is independent of eachother, this is because each game
-is new. There are no rematch mechanics. \### Multicollinearity
-Multicollinearity can affect k-NN performance, we can try eliminating
-the features with high multicollinearity, just like we did in RF. \###
-Outliers Sensitive to outliers. \### Sample size Computationally
-expensive on large datasets, could overfit on small dataset. \###
-Normality, Homoscedasticity, Linear relationship Not required \###
-Feature scaling Due to k-NN being a distance-based method of
-classification, feature scaling is required.
-
-```{r}
-#k-nn
-library(class)
-library(kknn)
-```
-
-##Implementation Base model with default hyperparameters
+##Implementation
 
 ```{r}
-library(kknn)
 model <- kknn(
           target ~ .,
           train,
-          test
+          test,
+          #scaling the data
+          scale = TRUE
         )
 
 pred <- predict(model)
 cat("Base k-NN metrics: ")
 print_extra_scores(pred, test$target)
+
+#saving for later comparison
+base_knn_accuracy <- mean(pred == test$target)
 ```
+The k-NN algorithm, even though to not such a degree as DT or RF, performs very well on our dataset. Default accuracy of 94.17% is excellent. Just like RF and DT, k-NN is also better at predicting the positive outcome of a match.
 
-##Hyperparameter tuning The hyperparameters we will be tuning to find
-the best k-NN model is the k value, meaning the number of neighbours
-needed for classifying a point, distance, and kernel. We can choose
-distances 1,2,3 - Manhattan, Euclidian and Minkowski. There are 10
-kernels available for kknn, we chose to try all of them. The final
-number of combinations adds up to 1500.
-
-We will iterate through all the combinations - grid search, since there
-is "only" 1500 combinations, doing this will not be as computationaly
-expensive as random forest, for which we opted to use random search.
-
-### Hyperparameter search
+##Hyperparameter tuning 
+The hyperparameters we will be tuning to find the best k-NN model is the k value, meaning the number of neighbours needed for classifying a point, distance, and kernel. We can choose distances 1,2,3 - Manhattan, Euclidian and Minkowski. There are 10 kernels available for kknn, we have decided to try all of them, since we do not want to miss an important combination of hyperparameters. Just like for DT and RF, we will be doing a random search.
 
 ```{r}
 train_copy <- train
@@ -780,9 +690,9 @@ tune_knn <- function(
   test,
   target_col = "target",
   seed = 67,
-  knn_iterations = 50,
-  #when we lowered the k-values, the model found good solutions, but trainig set accuracy score was 100% - overfit
-  k_values = 1:50,
+  knn_iterations = 300,
+  #since k-NN could overfit easily with very low k (for example 1), we chose to go from 5
+  k_values = 5:50,
   distance_metrics = 1:3,
   kernels = c(
     "rectangular",
@@ -808,14 +718,17 @@ tune_knn <- function(
 
   #keeping only the unique random combinations=no duplicates
   random_grid <- unique(random_grid)
-
+  
+  #since the kknn function does not have a built-in cv like rpart does, we will make our own implementation
+  #using createFolds, we create splits for training and validation
   folds <- createFolds(
     train[[target_col]],
     k = k_folds,
     list = TRUE,
     returnTrain = FALSE
   )
-
+  
+  #we save the best metrics
   best_k <- NULL
   best_distance <- NULL
   best_kernel <- NULL
@@ -823,18 +736,19 @@ tune_knn <- function(
   results <- data.frame()
 
   for (i in 1:nrow(random_grid)) {
-
+    
+    #var for storing cv accuracies
     fold_accuracies <- numeric(k_folds)
-
+    
+    #the actual body of code for cv
     for (fold_id in 1:k_folds) {
-
+      
+      #get index for split
       validation_index <- folds[[fold_id]]
-
+      
+      #split data to training and validation
       cv_train_data <- train[-validation_index, ]
       cv_validation_data <- train[validation_index, ]
-
-      cv_train_data[[target_col]] <- as.factor(cv_train_data[[target_col]])
-      cv_validation_data[[target_col]] <- as.factor(cv_validation_data[[target_col]])
 
       model <- kknn(
         target ~ .,
@@ -846,14 +760,17 @@ tune_knn <- function(
         #when we did not use scaling, the accuracy was the same for all combinations
         scale = TRUE
       )
-
+      
+      #since kknn already has 'test', we simply pass the model into the predict function
       predictions <- predict(model)
-
+      
+      #saving the current folds cv accuracy
       fold_accuracies[fold_id] <- mean(
         predictions == cv_validation_data[[target_col]]
       )
     }
-
+    
+    #we calculate the mean cv accuracy for the current model (hyperparam combination)
     cv_accuracy <- mean(fold_accuracies)
 
     results <- rbind(
@@ -865,7 +782,8 @@ tune_knn <- function(
         cv_accuracy = cv_accuracy
       )
     )
-
+    
+    #saving the best params
     if (cv_accuracy > best_cv_accuracy) {
       best_cv_accuracy <- cv_accuracy
       best_k <- random_grid$k[i]
@@ -875,7 +793,8 @@ tune_knn <- function(
   }
 
   results <- results[order(results$cv_accuracy, decreasing = TRUE), ]
-
+  
+  #we train the best model again
   best_model <- kknn(
     as.formula(paste(target_col, "~ .")),
     train = train,
@@ -919,42 +838,50 @@ tune_knn <- function(
 ```{r}
 knn_tuned_all_features <- tune_knn(train_copy,test_copy)
 ```
+Finally, for our third non-parametric model, we have managed to increase the accuracy. Other than accuracy, recall has jumped to 98.18%, however it was at the cost of precision and specificity. We cannot use training data to test the model for overfit, because k-NN stores the training points, testing it on the same training data gives overly optimistic results - for low k-value, each point is its own nearest neighbor, so the training accuracy can become 100%). Due to this, we decided to use CV accuracy to determine wether the model is overfit or not, and as we can see by the CV-test gap, the accuracy values are nearly the same, which means there is not an overfit on training data.
 
+Now we will plot the influence each hyperparameter had on the outcome of CV accuracy.
 ```{r}
 ggplot(knn_tuned_all_features$results, aes(x = k, y = cv_accuracy)) +
-  geom_point(alpha = 0.6) +
-  geom_line() +
+  geom_point(alpha = 0.5) +
+  geom_smooth(se = FALSE) +
   labs(
-    title = "k-NN Tuning: Number of Neighbors vs CV Accuracy",
-    x = "k",
+    title = "k-NN Tuning: k vs CV Accuracy",
+    x = "Number of Neighbors (k)",
     y = "Cross-validation Accuracy"
   ) +
-  scale_y_continuous(labels = scales::percent)
+  scale_y_continuous(labels = percent) +
+  theme_minimal()
 
-ggplot(knn_tuned_all_features$results, aes(x = kernel, y = cv_accuracy, group = 1)) +
-  geom_point(alpha = 0.6) +
-  geom_line() +
+ggplot(knn_tuned_all_features$results, aes(x = factor(distance), y = cv_accuracy)) +
+  geom_boxplot() +
   labs(
-    title = "k-NN Tuning: Kernel Comparison",
-    x = "Kernel",
-    y = "CV Accuracy"
+    title = "k-NN Tuning: Distance Metric vs CV Accuracy",
+    x = "Distance Metric",
+    y = "Cross-validation Accuracy"
   ) +
-  scale_y_continuous(labels = scales::percent)
-```
+  scale_y_continuous(labels = percent) +
+  theme_minimal()
 
-We also tried to use train() and trainControl() to control the cross
-validation and training of the models. Due to the different creation of
-folds for the training and validation of the models, the outcomes
-slightly differed. We achieved similar results in terms of accuracy,
-however, the training time of all the models took 5x longer using the
-train() function (2 hours), so we have decided to choose our
-implementation.
+ggplot(knn_tuned_all_features$results, aes(x = reorder(kernel, cv_accuracy, median), y = cv_accuracy)) +
+  geom_boxplot() +
+  coord_flip() +
+  labs(
+    title = "k-NN Tuning: Kernel vs CV Accuracy",
+    x = "Kernel",
+    y = "Cross-validation Accuracy"
+  ) +
+  scale_y_continuous(labels = percent) +
+  theme_minimal()
+```
+As we can see, for lower k, the accuracy is lower, similar to what happened with *mtry* parameter during RF hyperparameter tuning. The accuracy starts to stabilize around the value 25, but then looks to be on a downward trajectory again after the k-value of 40.
+
+When it comes to distance metric, the difference looks quite substantial at first, but when we look closer, its about 1% when it comes to the median values of each distance metric. But metric 1 (euclidian) is the clear winner.
+
+Kernels are even closer in median values than distance metrics, but the best kernel, or at least the one with the biggest mean CV accuracy is rank, biweight is the worst one.
 
 ## PCA
-
-Since our dataset contains \~55 features, we have decided to try using a
-dimensionality reduction method to lower the number of features. For
-this, we have chosen PCA.
+Since our dataset contains 35 features, we have decided to try using a dimensionality reduction method to lower the number of features. For this, we have chosen PCA.
 
 ```{r}
 tune_knn_pca <- function(
@@ -962,9 +889,11 @@ tune_knn_pca <- function(
   test,
   target_col = "target",
   seed = 67,
-  pca_iterations = 50,
+  pca_iterations = 300,
+  #we will try different thresholds (how much variance in the data can be explained)
   pca_thresholds = seq(0.39, 0.99, by = 0.05),
-  k_values = 10:50,
+  #again trying to avoid overfit
+  k_values = 5:50,
   distance_metrics = 1:3,
   kernels = c(
     "rectangular",
@@ -982,13 +911,16 @@ tune_knn_pca <- function(
 ) {
 
   set.seed(seed)
-
+  
+  #spliting the data into predictors and target
+  #PCA will only be done on predictor features, so we extract the target column
   x_train <- train[, names(train) != target_col]
   y_train <- train[[target_col]]
 
   x_test <- test[, names(test) != target_col]
   y_test <- test[[target_col]]
 
+  #creating random combinations of PCA threshold and k-NN hyperparameters
   random_grid <- data.frame(
     pca_threshold = sample(pca_thresholds, pca_iterations, replace = TRUE),
     k = sample(k_values, pca_iterations, replace = TRUE),
@@ -996,8 +928,10 @@ tune_knn_pca <- function(
     kernel = sample(kernels, pca_iterations, replace = TRUE)
   )
 
+  #keeping only unique combinations
   random_grid <- unique(random_grid)
 
+  #kknn does not have built-in cross-validation, so we create folds manually
   folds <- createFolds(
     y_train,
     k = k_folds,
@@ -1005,42 +939,54 @@ tune_knn_pca <- function(
     returnTrain = FALSE
   )
 
+  #variables for saving the best model parameters and results
   best_cv_accuracy <- 0
   best_params <- NULL
   results <- data.frame()
 
   for (i in 1:nrow(random_grid)) {
 
+    #saving accuracy and number of PCA components for each fold
     fold_accuracies <- numeric(k_folds)
     fold_components <- numeric(k_folds)
 
+    #cross-validation loop
     for (fold_id in 1:k_folds) {
 
+      #indexes of validation rows for current fold
       validation_index <- folds[[fold_id]]
 
+      #creating training and validation split for current fold
       cv_x_train <- x_train[-validation_index, ]
       cv_y_train <- y_train[-validation_index]
 
       cv_x_validation <- x_train[validation_index, ]
       cv_y_validation <- y_train[validation_index]
 
+      #PCA is fitted only on the training part of the fold
+      #because we want to avoid data leakage from validation data
       pca_model <- preProcess(
         cv_x_train,
         method = c("center", "scale", "pca"),
         thresh = random_grid$pca_threshold[i]
       )
 
+      #applying the same PCA transformation to train and validation data
       cv_x_train_pca <- predict(pca_model, cv_x_train)
       cv_x_validation_pca <- predict(pca_model, cv_x_validation)
 
+      #saving how many PCA components were kept
       fold_components[fold_id] <- ncol(cv_x_train_pca)
 
+      #converting PCA outputs back to data frames
       cv_train_pca <- data.frame(cv_x_train_pca)
       cv_validation_pca <- data.frame(cv_x_validation_pca)
 
+      #adding target column back, because kknn expects it in the train/test data
       cv_train_pca[[target_col]] <- cv_y_train
       cv_validation_pca[[target_col]] <- cv_y_validation
 
+      #training k-NN with current hyperparameter combination
       model <- kknn(
         as.formula(paste(target_col, "~ .")),
         train = cv_train_pca,
@@ -1057,9 +1003,11 @@ tune_knn_pca <- function(
       )
     }
 
+    #calculating mean CV accuracy and mean number of PCA components
     cv_accuracy <- mean(fold_accuracies)
     mean_components <- mean(fold_components)
 
+    #saving results for the current hyperparameter combination
     results <- rbind(
       results,
       data.frame(
@@ -1072,6 +1020,7 @@ tune_knn_pca <- function(
       )
     )
 
+    #if current combination is the best, save it
     if (cv_accuracy > best_cv_accuracy) {
       best_cv_accuracy <- cv_accuracy
       best_params <- random_grid[i, ]
@@ -1080,21 +1029,26 @@ tune_knn_pca <- function(
 
   results <- results[order(results$cv_accuracy, decreasing = TRUE), ]
 
+  #after finding the best parameters, we fit PCA again on the whole training data
   final_pca_model <- preProcess(
     x_train,
     method = c("center", "scale", "pca"),
     thresh = best_params$pca_threshold
   )
 
+  #applying final PCA transformation to train and test data
   x_train_pca <- predict(final_pca_model, x_train)
   x_test_pca <- predict(final_pca_model, x_test)
 
+  #preparing PCA data for final k-NN model
   knn_train_pca <- data.frame(x_train_pca)
   knn_test_pca <- data.frame(x_test_pca)
 
+  #adding target column back
   knn_train_pca[[target_col]] <- y_train
   knn_test_pca[[target_col]] <- y_test
 
+  #training the final model with the best parameters
   final_model <- kknn(
     as.formula(paste(target_col, "~ .")),
     train = knn_train_pca,
@@ -1104,9 +1058,11 @@ tune_knn_pca <- function(
     kernel = best_params$kernel
   )
 
+  #final predictions on testing data
   test_predictions <- predict(final_model)
   test_accuracy <- mean(test_predictions == knn_test_pca[[target_col]])
 
+  #number of PCA components used in the final model
   final_components <- ncol(x_train_pca)
 
   generalization_gap <- best_cv_accuracy - test_accuracy
@@ -1138,165 +1094,111 @@ tune_knn_pca <- function(
 }
 ```
 
+
 ```{r}
 knn_pca_tuned <- tune_knn_pca(
   train = train,
   test = test,
-  pca_iterations = 50
+  pca_iterations = 300
 )
 ```
+As we can see, the model did not benefit from the PCA reduction of features on our dataset. The accuracy decreased by 3% compared to the hyperparameter-tuned version of k-NN. Recall is the only other metric in the 90s and it still remains quite high despite the loss of accuracy. That means that our model preserves the ability to correctly predict true positives even with dimension reduction. There is also a visible increase in CV-test gap, which points to a slight overfit.
 
+What we tested were not just hyperparameters, but also the best threshold for PCA. The best threshold is 0.64. The loss of accuracy could be explained by this threshold too. 0.64 means that the new features only explain 64% of the variance in the data. That is a huge loss. The number of features got reduced from 36 to 14, which is more than half.
+
+In the end, doing a PCA reduction on our data was not worth it, simply because it did not increase the accuracy of our model. What is more, with the current features transformed and combined using PCA, the dataset has lost it's explainability. We no longer know what each feature means. 
+
+Since the original features were meaningful and the dataset was not too problematic for k-NN, PCA harmed performance instead of improving it.
+
+Next we will plot the hyperparameters and their influence over CV accuracy.
 ```{r}
-# pca_results_summary <- knn_pca_tuned$results %>%
-#   group_by(pca_threshold) %>%
-#   summarise(
-#     mean_accuracy = mean(cv_accuracy, na.rm = TRUE),
-#     best_accuracy = max(cv_accuracy, na.rm = TRUE),
-#     sd_accuracy = sd(cv_accuracy, na.rm = TRUE),
-#     mean_components = mean(mean_components, na.rm = TRUE),
-#     .groups = "drop"
-#   )
-# 
-# ggplot(pca_results_summary, aes(x = pca_threshold, y = mean_accuracy)) +
-#   geom_line(linewidth = 1) +
-#   geom_point(size = 2) +
-#   labs(
-#     title = "PCA k-NN: PCA Threshold vs Mean CV Accuracy",
-#     x = "PCA explained variance threshold",
-#     y = "Mean CV Accuracy"
-#   ) +
-#   scale_y_continuous(labels = scales::percent)
-```
-
-```{r}
-pca_components_summary <- knn_pca_tuned$results %>%
-  group_by(mean_components) %>%
-  summarise(
-    mean_accuracy = mean(cv_accuracy, na.rm = TRUE),
-    best_accuracy = max(cv_accuracy, na.rm = TRUE),
-    sd_accuracy = sd(cv_accuracy, na.rm = TRUE),
-    tested_combinations = n(),
-    .groups = "drop"
-  )
-
-ggplot(pca_components_summary, aes(x = mean_components, y = mean_accuracy)) +
-  geom_line(linewidth = 1) +
-  geom_point(size = 2) +
-  geom_errorbar(
-    aes(
-      ymin = mean_accuracy - sd_accuracy,
-      ymax = mean_accuracy + sd_accuracy
-    ),
-    width = 0.3,
-    alpha = 0.5
-  ) +
+ggplot(knn_pca_tuned$results, aes(x = pca_threshold, y = cv_accuracy)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(se = FALSE) +
   labs(
-    title = "PCA k-NN: Number of PCA Components vs Mean CV Accuracy",
-    x = "Mean number of PCA components",
-    y = "Mean CV Accuracy"
+    title = "PCA k-NN Tuning: PCA Threshold vs CV Accuracy",
+    x = "PCA Explained Variance Threshold",
+    y = "Cross-validation Accuracy"
   ) +
-  scale_y_continuous(labels = scales::percent) +
+  scale_y_continuous(labels = percent) +
   theme_minimal()
-
+ggplot(knn_pca_tuned$results, aes(x = mean_components, y = cv_accuracy)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(se = FALSE) +
+  labs(
+    title = "PCA k-NN Tuning: Number of Components vs CV Accuracy",
+    x = "Mean Number of PCA Components",
+    y = "Cross-validation Accuracy"
+  ) +
+  scale_y_continuous(labels = percent) +
+  theme_minimal()
+ggplot(knn_pca_tuned$results, aes(x = k, y = cv_accuracy)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(se = FALSE) +
+  labs(
+    title = "PCA k-NN Tuning: k vs CV Accuracy",
+    x = "Number of Neighbors (k)",
+    y = "Cross-validation Accuracy"
+  ) +
+  scale_y_continuous(labels = percent) +
+  theme_minimal()
+ggplot(knn_pca_tuned$results, aes(x = factor(distance), y = cv_accuracy)) +
+  geom_boxplot() +
+  labs(
+    title = "PCA k-NN Tuning: Distance Metric vs CV Accuracy",
+    x = "Distance Metric",
+    y = "Cross-validation Accuracy"
+  ) +
+  scale_y_continuous(labels = percent) +
+  theme_minimal()
+ggplot(knn_pca_tuned$results, aes(x = reorder(kernel, cv_accuracy, median), y = cv_accuracy)) +
+  geom_boxplot() +
+  coord_flip() +
+  labs(
+    title = "PCA k-NN Tuning: Kernel vs CV Accuracy",
+    x = "Kernel",
+    y = "Cross-validation Accuracy"
+  ) +
+  scale_y_continuous(labels = percent) +
+  theme_minimal()
 ```
+We can see an interesting downward trajectory when looking at PCA threshold and PCA number of components vs CV accuracy plots. From both of these plots, we can see that the accuracy was worse the more explained variance the PCA reduction contained. The explained variance had the biggest peak at around 60%. 
+
+When it comes to k-value, differently from the base hyperparameter-tuned k-NN, the CV accuracy kept increasing along with the k-value, which is different from the hyperparameter-tuned knn with all features. 
+
+The distance metrics influence did not change in their order, however, they are closer together than before, which implies that their influence on the outcome has lessened.
+
+And finally, the best kernel was once again *rank*, the biweight was the worst one again.
 
 # Final Evalutation
-
+## Metrics comparison
 ```{r}
-library(pROC)
-
-get_positive_prob <- function(prob_object, positive_class = "1") {
-  prob_df <- as.data.frame(prob_object)
-  
-  if (positive_class %in% colnames(prob_df)) {
-    return(prob_df[[positive_class]])
-  }
-  
-  return(prob_df[[ncol(prob_df)]])
-}
-
-dt_prob <- predict(
-  pruned_best_dt_model,
-  newdata = test,
-  type = "prob"
-)[, "1"]
-
-rf_prob <- predict(
-  rf_tuned$final_model,
-  newdata = test,
-  type = "prob"
-)[, "1"]
-
-knn_prob <- get_positive_prob(
-  predict(knn_tuned_all_features$best_model, type = "prob"),
-  positive_class = "1"
+library(knitr)
+results <- tibble(
+  model = c("DT", "DT-exp", "DT-tune", "RF", "RF-tune", "k-NN", "k-NN-tune", "k-NN-PCA-tune"),
+  Accuracy = c(97.76, 83.86, 95.52, 97.31, 97.31, 94.17, 94.62, 91.48),
+  Precision = c(96.46, 82.46, 94.64, 96.43, 96.43, 92.92, 91.53, 88.89),
+  Recall = c(99.09, 85.45, 96.36, 98.18, 98.18, 95.45, 98.18, 94.55),
+  Specificity = c(96.46, 82.30, 94.69, 96.46, 96.46, 92.92, 91.15, 88.50)
 )
 
-knn_pca_prob <- get_positive_prob(
-  predict(knn_pca_tuned$final_model, type = "prob"),
-  positive_class = "1"
-)
+kable(results, digits = 2, caption = "Comparison of model metrics")
 
-roc_dt <- pROC::roc(test$target, dt_prob, levels = c("0", "1"), direction = "<")
-roc_rf <- pROC::roc(test$target, rf_prob, levels = c("0", "1"), direction = "<")
-roc_knn <- pROC::roc(test$target, knn_prob, levels = c("0", "1"), direction = "<")
-roc_knn_pca <- pROC::roc(
-  knn_pca_tuned$test_pca$target,
-  knn_pca_prob,
-  levels = c("0", "1"),
-  direction = "<"
-)
+results_long <- results %>%
+  pivot_longer(-model, names_to = "Metric", values_to = "Value")
 
-roc_data <- bind_rows(
-  data.frame(
-    fpr = 1 - roc_dt$specificities,
-    tpr = roc_dt$sensitivities,
-    model = paste0("Decision Tree tuned, AUC = ", round(as.numeric(pROC::auc(roc_dt)), 3))
-  ),
-  data.frame(
-    fpr = 1 - roc_rf$specificities,
-    tpr = roc_rf$sensitivities,
-    model = paste0("Random Forest tuned, AUC = ", round(as.numeric(pROC::auc(roc_rf)), 3))
-  ),
-  data.frame(
-    fpr = 1 - roc_knn$specificities,
-    tpr = roc_knn$sensitivities,
-    model = paste0("k-NN tuned, AUC = ", round(as.numeric(pROC::auc(roc_knn)), 3))
-  ),
-  data.frame(
-    fpr = 1 - roc_knn_pca$specificities,
-    tpr = roc_knn_pca$sensitivities,
-    model = paste0("k-NN PCA tuned, AUC = ", round(as.numeric(pROC::auc(roc_knn_pca)), 3))
-  )
-)
-
-ggplot(roc_data, aes(x = fpr, y = tpr, color = model)) +
-  geom_line(linewidth = 1.1) +
-  geom_abline(
-    intercept = 0,
-    slope = 1,
-    linetype = "dashed",
-    color = "gray40"
-  ) +
-  coord_equal() +
-  labs(
-    title = "ROC Curve Comparison of Tuned Models",
-    subtitle = "Curves closer to the top-left corner indicate better classification performance",
-    x = "False Positive Rate",
-    y = "True Positive Rate / Recall",
-    color = "Model"
-  ) +
-  theme_minimal() +
-  theme(
-    legend.position = "bottom"
-  )
-
-cat("AUC - Decision Tree tuned:", round(as.numeric(pROC::auc(roc_dt)), 4), "\n")
-cat("AUC - Random Forest tuned:", round(as.numeric(pROC::auc(roc_rf)), 4), "\n")
-cat("AUC - k-NN tuned:", round(as.numeric(pROC::auc(roc_knn)), 4), "\n")
-cat("AUC - k-NN PCA tuned:", round(as.numeric(pROC::auc(roc_knn_pca)), 4), "\n")
+ggplot(results_long, aes(x = Metric, y = model, fill = Value)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = sprintf("%.2f", Value)), size = 3) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(title = "Model Performance Comparison", x = NULL, y = NULL, fill = "%") +
+  theme_minimal()
 ```
 
+
+
+## Accuracy scores between models
+For the final comparison, we will look at the accuracy scores of each model we created.
 ```{r}
 model_results <- data.frame(
   model = c(
@@ -1332,3 +1234,18 @@ ggplot(model_results, aes(x = reorder(model, test_accuracy), y = test_accuracy))
     breaks = seq(0.80, 1.00, by = 0.05)
   )
 ```
+#Conclusion
+In this project, we compared three non-parametric classification models: Decision Tree, Random Forest, and k-NN. The goal was to predict match outcomes using several performance metrics such as accuracy, recall, precision, specificity, ROC curves, AUC, and overfitting analysis.
+
+The most important variable was diff_champion_experience, which strongly influenced both the Decision Tree and Random Forest models. Keeping this variable was a good decision because it greatly improved performance and was not considered data leakage. However, the models became highly dependent on it.
+
+The best overall model was the default Decision Tree, with around 97.76% test accuracy. It performed slightly better than Random Forest and was also easier to interpret, since it clearly showed which feature drove the predictions. The Random Forest also performed very well, with around 97.31% accuracy. Tuning did not improve its accuracy, but it helped reduce overfitting, so it is a good choice when stability is more important than simplicity.
+
+The k-NN model performed well, but worse than the tree-based models. Its accuracy was around 94.17% before tuning, and tuning improved recall, but reduced precision and specificity. This means k-NN became better at detecting wins but also made more false positive predictions.
+
+The weakest result came from PCA with k-NN. Although PCA was used to reduce dimensionality, it caused too much information loss and reduced accuracy by about 5.5% compared to tuned k-NN. It also made the model less interpretable.
+
+Removing diff_champion_experience was useful for analysis, but not good for final prediction. It caused the Decision Tree accuracy to drop by almost 14% and increased overfitting. This confirmed that the feature carried most of the influence(predictive power).
+
+Overall, the default Decision Tree was the best final model because it had the highest accuracy, strong recall, and good interpretability. The tuned Random Forest is the best alternative when we want a more robust model. The PCA k-NN was the worst choice for this dataset. The main lesson is that more complex models or transformations do not always improve performance, especially when one strong predictor already explains most of the target behavior.
+

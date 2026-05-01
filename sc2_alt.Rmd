@@ -11,7 +11,6 @@ In this section of our project, our goal is to build 3 non-parametric models, an
 # Loading libraries and data
 ```{r}
 library(tidyverse)
-library(tidymodels)
 
 #vif values
 library(car)
@@ -24,12 +23,6 @@ library(caret)
 #random forest
 library(randomForest)
 
-#k-nn
-library(class)
-
-#metrics lib
-library(Metrics)
-#https://cran.r-project.org/web/packages/Metrics/Metrics.pdf
 
 #clear env variables
 rm(list = ls())
@@ -45,10 +38,12 @@ df <- df[2:ncol(df)]
 train_margin=0.8
 
 set.seed(67)
-train_index <- sample(1:nrow(df), train_margin * nrow(df))
+
+#balanced class ratio in test and train datasets
+train_index <- createDataPartition(df$target, p = train_margin, list = FALSE)
 
 train <- df[train_index, ]
-test  <- df[-train_index, ]
+test <- df[-train_index, ]
 
 #converting to factor, so the models wont think its for regression
 train$target <- as.factor(train$target)
@@ -582,13 +577,16 @@ library(kknn)
 model <- kknn(
           target ~ .,
           train,
-          test
+          test,
+          scale=TRUE
         )
 
 pred <- predict(model)
 base_knn_accuracy <- mean(pred == test$target)
 base_knn_accuracy
 ```
+
+
 
 ##Hyperparameter tuning
 The hyperparameters we will be tuning to find the best k-NN model is the k value, meaning the number of neighbours needed for classifying a point, distance, and kernel. We can choose distances 1,2,3 - Manhattan, Euclidian and Minkowski. There are 10 kernels available for kknn, we chose to try all of them. The final number of combinations adds up to 1500.
